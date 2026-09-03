@@ -22,6 +22,7 @@
     const PILL_ID = 'ghtf-pill';
     const DEBOUNCE_MS = 300;
     const COMMENT_FILTER_PILL_ID = 'ghccf-pill';
+    const DOCK_ID = 'ghdf-dock';
 
     const FILE_SELECTOR = ['.js-file', '[class^="Diff-module__diffTargetable"]'].join(',');
     const ADDITION_SELECTOR = ['.blob-code-addition', 'td[data-code-marker="+"]'].join(',');
@@ -76,7 +77,29 @@
      */
     const AUTO_INSTALLED = window.__ghDiffFilterAuto === true;
 
-    let enabled = localStorage.getItem(ENABLED_KEY) !== 'false';
+    /**
+     * Preferences resolve per repository, falling back to a global default, so
+     * a repo whose tests you always read keeps them open without changing the
+     * setting everywhere.
+     */
+    function repoScope() {
+        const parts = location.pathname.match(/^\/([^/]+)\/([^/]+)/);
+        return parts ? `${parts[1]}/${parts[2]}` : '';
+    }
+
+    function repoEnabledKey() {
+        const scope = repoScope();
+        return scope ? `${ENABLED_KEY}:${scope}` : ENABLED_KEY;
+    }
+
+    function readEnabled() {
+        const forRepo = localStorage.getItem(repoEnabledKey());
+        if (forRepo !== null) return forRepo !== 'false';
+        return localStorage.getItem(ENABLED_KEY) !== 'false';
+    }
+
+    let activeScope = repoScope();
+    let enabled = readEnabled();
     /** Set while this script mutates the DOM, so the observer ignores its own writes. */
     let suppressObserver = false;
     let pill;
@@ -367,9 +390,12 @@
             pill.addEventListener('click', () => { api.enabled = !enabled; });
             document.body.appendChild(pill);
         }
-        // Sit above the comment filter's pill, measured rather than assumed.
-        const neighbour = document.getElementById(COMMENT_FILTER_PILL_ID);
-        pill.style.bottom = neighbour ? `${neighbour.offsetHeight + 24}px` : '16px';
+        // The extension may dock both pills in one container and own the
+        // layout; only place ourselves when standing alone.
+        if (!pill.closest('#' + DOCK_ID)) {
+            const neighbour = document.getElementById(COMMENT_FILTER_PILL_ID);
+            pill.style.bottom = neighbour ? `${neighbour.offsetHeight + 24}px` : '16px';
+        }
 
         if (containerCount === 0) {
             pill.style.display = 'none';
@@ -709,6 +735,13 @@
 
     function apply() {
         suppressObserver = true;
+        // Turbo carries this instance across repositories; the preference has to
+        // follow the repository on screen.
+        if (activeScope !== repoScope()) {
+            activeScope = repoScope();
+            enabled = readEnabled();
+            statHost = null;
+        }
         const containers = fileContainers();
         let unidentified = 0;
         let commented = 0;
@@ -812,9 +845,30 @@
         },
         set enabled(value) {
             enabled = Boolean(value);
-            localStorage.setItem(ENABLED_KEY, String(enabled));
+            localStorage.setItem(repoEnabledKey(), String(enabled));
             reset();
             apply();
+        },
+        /** The setting for repositories with no preference of their own. */
+        get defaultEnabled() {
+            return localStorage.getItem(ENABLED_KEY) !== 'false';
+        },
+        set defaultEnabled(value) {
+            localStorage.setItem(ENABLED_KEY, String(Boolean(value)));
+            enabled = readEnabled();
+            reset();
+            apply();
+        },
+        get repo() {
+            return repoScope();
+        },
+        /** Hand this repository back to the global default. */
+        clearRepoPreference() {
+            localStorage.removeItem(repoEnabledKey());
+            enabled = readEnabled();
+            reset();
+            apply();
+            return { repo: repoScope(), enabled };
         },
         get rules() {
             return rules.map(([name, re]) => ({ name, pattern: String(re) }));
