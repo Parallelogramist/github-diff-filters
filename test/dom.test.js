@@ -132,12 +132,15 @@ const html = `<!doctype html><html><body><div id="files">
     ok(!goTest.hasAttribute('data-ghtf'), 'state attribute cleared when disabled');
     ok(goTest.style.display === '', 'test file visible when disabled');
     ok(/Test files shown/.test(doc.getElementById('ghtf-pill').textContent), 'pill offers to re-hide');
-    ok(window.localStorage.getItem('gh-hide-test-files:enabled') === 'false', 'disabled state persisted');
+    // The pill writes the repository on screen, not the global default.
+    ok(window.localStorage.getItem('gh-hide-test-files:enabled:acme/repo') === 'false',
+        'disabled state persisted against this repository');
 
     console.log('\n-- toggle back on --');
     api.enabled = true;
     ok(doc.querySelectorAll('.ghtf-stub').length === 5, 'all 5 test files hidden again (got ' + doc.querySelectorAll('.ghtf-stub').length + ')');
-    ok(window.localStorage.getItem('gh-hide-test-files:enabled') === 'true', 'enabled state persisted');
+    ok(window.localStorage.getItem('gh-hide-test-files:enabled:acme/repo') === 'true',
+        'enabled state persisted against this repository');
 
     console.log('\n-- api.show(needle) --');
     ok(api.show('handler_test.go') === 1, 'show() revealed exactly the matching file');
