@@ -40,6 +40,7 @@
     const ADDED_TOTAL = /^\+[\d,]+$/;
     const DELETED_TOTAL = /^[-\u2212\u2013][\d,]+$/;
     const COMBINED_TOTAL = /^\+[\d,]+\s*[-\u2212\u2013][\d,]+$/;
+    const DIFF_BODY_SELECTOR = 'tr,[role="row"],[class*="iffLine"],[class*="diff-line"],.blob-code,.blob-num,table';
     const ANCHOR_ID = /(diff-[0-9a-f]{16,})$/i;
     const CONTROL_LEAF = /^(viewed|expand|collapse|copy|comment|comments|hidden|load|diff|show|hide|unchanged|binary|\u2026|\u22ef)$/i;
 
@@ -75,6 +76,8 @@
     let suppressObserver = false;
     let pill;
     let statHost;
+    let totalsAttempts = 0;
+    const TOTALS_ATTEMPT_LIMIT = 15;
 
     // ---------------------------------------------------------------- rules
 
@@ -195,6 +198,23 @@
         return Number(String(text == null ? '' : text).replace(/[^\d]/g, '')) || 0;
     }
 
+    /**
+     * A container's leading text, stopping where the diff body starts. Headers
+     * come first in document order, and their class names differ between the two
+     * GitHub diff views, so position is a steadier guide than a selector.
+     */
+    function headerLeaves(container, limit) {
+        const out = [];
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node && out.length < limit; node = walker.nextNode()) {
+            const parent = node.parentElement;
+            if (parent && parent.closest(DIFF_BODY_SELECTOR)) break;
+            const text = node.nodeValue.trim();
+            if (text) out.push(text);
+        }
+        return out;
+    }
+
     /** The file header's combined changed-lines figure, present even when the diff is collapsed. */
     function changedTotal(container) {
         const stat = (headerOf(container) || container).querySelector('.diffstat')
@@ -220,21 +240,13 @@
             return { added, deleted, changed: added + deleted, signed: true, known: true };
         }
 
-        const header = headerOf(container);
-        if (header) {
-            const leaves = [];
-            const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
-            for (let node = walker.nextNode(); node && leaves.length < 6; node = walker.nextNode()) {
-                const text = node.nodeValue.trim();
-                if (DIFFSTAT_LEAF.test(text)) leaves.push(text);
-            }
-            const plus = leaves.find(text => text.startsWith('+'));
-            const minus = leaves.find(text => /^[-\u2212\u2013]/.test(text));
-            if (plus || minus) {
-                const added = parseCount(plus);
-                const deleted = parseCount(minus);
-                return { added, deleted, changed: added + deleted, signed: true, known: true };
-            }
+        const leaves = headerLeaves(container, 40).filter(text => DIFFSTAT_LEAF.test(text));
+        const plus = leaves.find(text => text.startsWith('+'));
+        const minus = leaves.find(text => /^[-\u2212\u2013]/.test(text));
+        if (plus && minus) {
+            const added = parseCount(plus);
+            const deleted = parseCount(minus);
+            return { added, deleted, changed: added + deleted, signed: true, known: true };
         }
 
         const added = container.querySelectorAll(ADDITION_SELECTOR).length;
@@ -589,10 +601,20 @@
     }
 
     function renderVisibleTotals(containers) {
-        const host = diffstatHost();
-        if (!host) return null;
-        const existing = host.querySelector('.' + VISIBLE_STAT_CLASS);
         const hiddenFiles = containers.filter(c => c.getAttribute(STATE_ATTR) === 'hidden');
+        const host = diffstatHost();
+        if (!host) {
+            // The toolbar holding the totals can render after the diff. Nothing
+            // else may mutate afterwards, so waiting on the observer alone loses
+            // the figure until the next toggle.
+            if (hiddenFiles.length > 0 && totalsAttempts < TOTALS_ATTEMPT_LIMIT) {
+                totalsAttempts++;
+                setTimeout(refreshChrome, 400);
+            }
+            return null;
+        }
+        totalsAttempts = 0;
+        const existing = host.querySelector('.' + VISIBLE_STAT_CLASS);
         if (!enabled || hiddenFiles.length === 0) {
             if (existing) existing.remove();
             return null;
@@ -715,6 +737,8 @@
         suppressObserver = true;
         for (const container of fileContainers()) clearFile(container);
         clearTree();
+        statHost = null;
+        totalsAttempts = 0;
         const badge = document.querySelector('.' + VISIBLE_STAT_CLASS);
         if (badge) badge.remove();
         setTimeout(() => { suppressObserver = false; }, 0);
@@ -812,6 +836,34 @@
                 console.warn('[test-file-filter] file containers found but no paths extracted. Attrs tried: ' + PATH_ATTRS.join(', '));
             }
             return rows;
+        },
+        /** Compact dump of what the two unreliable probes actually saw. */
+        report() {
+            const containers = fileContainers();
+            const hidden = containers.find(c => c.getAttribute(STATE_ATTR) === 'hidden');
+            const host = diffstatHost();
+            const describe = el => el && {
+                tag: el.tagName,
+                id: el.id || null,
+                cls: String(el.className || '').slice(0, 90),
+                text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 90)
+            };
+            const out = {
+                url: location.pathname,
+                containers: containers.length,
+                hidden: containers.filter(c => c.getAttribute(STATE_ATTR) === 'hidden').length,
+                totalsHost: describe(host),
+                hostTotals: host ? hostTotals(host) : null,
+                sampleHiddenPath: hidden ? hidden.__ghtfPath || filePath(hidden) : null,
+                sampleHeaderLeaves: hidden ? headerLeaves(hidden, 24) : null,
+                sampleCounts: hidden ? fileCounts(hidden) : null,
+                sampleHeaderHtml: hidden
+                    ? ((headerOf(hidden) || hidden).outerHTML || '').replace(/\s+/g, ' ').slice(0, 700)
+                    : null
+            };
+            console.log('%c[test-file-filter] paste everything below', 'font-weight:bold;color:#d29922');
+            console.log(JSON.stringify(out, null, 1));
+            return out;
         },
         selectors: { FILE_SELECTOR, PATH_ATTRS }
     };

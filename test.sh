@@ -28,6 +28,10 @@ echo "=== totals host without an id (source) ==="
 node "$HERE/test/totals-host.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ TOTALS)'
 
 echo
+echo "=== per-file counts in the review view (source) ==="
+node "$HERE/test/changes-counts.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ CHANGES)'
+
+echo
 echo "=== extension content scripts (built bundle) ==="
 node "$HERE/test/extension.test.js" | grep -E '^(  FAIL|ALL|[0-9]+ EXTENSION)'
 
@@ -47,4 +51,7 @@ if [[ -f "$HERE/hide-test-files.min.js" ]]; then
     echo
     echo "=== totals host without an id (minified build) ==="
     node "$HERE/test/totals-host.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ TOTALS)'
+    echo
+    echo "=== per-file counts in the review view (minified build) ==="
+    node "$HERE/test/changes-counts.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ CHANGES)'
 fi
