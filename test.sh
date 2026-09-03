@@ -40,6 +40,10 @@ echo "=== per-repo preferences (source) ==="
 node "$HERE/test/per-repo.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ PER)'
 
 echo
+echo "=== unchanged since last visit (source) ==="
+node "$HERE/test/unchanged.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ UNCHANGED)'
+
+echo
 echo "=== extension content scripts (built bundle) ==="
 node "$HERE/test/extension.test.js" | grep -E '^(  FAIL|ALL|[0-9]+ EXTENSION)'
 
@@ -72,4 +76,7 @@ if [[ -f "$HERE/hide-test-files.min.js" ]]; then
     echo
     echo "=== per-repo preferences (minified build) ==="
     node "$HERE/test/per-repo.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ PER)'
+    echo
+    echo "=== unchanged since last visit (minified build) ==="
+    node "$HERE/test/unchanged.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ UNCHANGED)'
 fi

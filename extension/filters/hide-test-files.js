@@ -19,6 +19,10 @@
 
     const ENABLED_KEY = 'gh-hide-test-files:enabled';
     const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';
+    const ONLY_CHANGED_KEY = 'gh-hide-test-files:onlyChanged';
+    const SEEN_KEY = 'gh-hide-test-files:seen';
+    const SEEN_INDEX_KEY = 'gh-hide-test-files:seenIndex';
+    const SEEN_LIMIT = 20;
     const STATE_ATTR = 'data-ghtf';
     const HIDDEN_CLASS = 'ghtf-hidden-file';
     const STUB_CLASS = 'ghtf-stub';
@@ -26,6 +30,7 @@
     const DEBOUNCE_MS = 300;
     const COMMENT_FILTER_PILL_ID = 'ghccf-pill';
     const DOCK_ID = 'ghdf-dock';
+    const HIDDEN_STATES = /^(hidden|unchanged)$/;
 
     const FILE_SELECTOR = ['.js-file', '[class^="Diff-module__diffTargetable"]'].join(',');
     const ADDITION_SELECTOR = ['.blob-code-addition', 'td[data-code-marker="+"]'].join(',');
@@ -101,8 +106,77 @@
         return localStorage.getItem(ENABLED_KEY) !== 'false';
     }
 
+    function onlyChangedKey() {
+        const scope = repoScope();
+        return scope ? `${ONLY_CHANGED_KEY}:${scope}` : ONLY_CHANGED_KEY;
+    }
+
+    function readOnlyChanged() {
+        return localStorage.getItem(onlyChangedKey()) === 'true';
+    }
+
     let activeScope = repoScope();
     let enabled = readEnabled();
+    let onlyChanged = readOnlyChanged();
+
+    /**
+     * What each file looked like on the previous visit to this pull request,
+     * read once and held for the whole visit. Comparing against a snapshot that
+     * was rewritten mid-visit would report everything as unchanged.
+     */
+    let visitBaseline;
+    let baselineFor;
+    let lastWritten;
+
+    function pullRequestScope() {
+        const pr = location.pathname.match(/\/pull\/(\d+)/);
+        return pr ? `${repoScope()}#${pr[1]}` : '';
+    }
+
+    function seenKeyFor(scope) {
+        return `${SEEN_KEY}:${scope}`;
+    }
+
+    function readBaseline() {
+        const scope = pullRequestScope();
+        if (baselineFor === scope) return visitBaseline;
+        baselineFor = scope;
+        lastWritten = null;
+        try {
+            visitBaseline = scope ? JSON.parse(localStorage.getItem(seenKeyFor(scope)) || '{}') : {};
+        } catch (error) {
+            visitBaseline = {};
+        }
+        return visitBaseline;
+    }
+
+    /** Keeps the newest pull requests only, so this never grows without bound. */
+    function rememberSnapshot(snapshot) {
+        const scope = pullRequestScope();
+        if (!scope) return;
+        const serialised = JSON.stringify(snapshot);
+        if (serialised === lastWritten) return;
+        lastWritten = serialised;
+        localStorage.setItem(seenKeyFor(scope), serialised);
+        let index;
+        try {
+            index = JSON.parse(localStorage.getItem(SEEN_INDEX_KEY) || '[]');
+        } catch (error) {
+            index = [];
+        }
+        index = [scope].concat(index.filter(entry => entry !== scope));
+        for (const stale of index.slice(SEEN_LIMIT)) localStorage.removeItem(seenKeyFor(stale));
+        localStorage.setItem(SEEN_INDEX_KEY, JSON.stringify(index.slice(0, SEEN_LIMIT)));
+    }
+
+    /** Counts plus hunk headers: enough to tell a rewritten file from a resent one. */
+    function fingerprint(container) {
+        const counts = fileCounts(container);
+        const hunks = Array.from(container.querySelectorAll('.blob-code-hunk'))
+            .map(el => (el.textContent || '').trim())
+            .join('|');
+        return `${counts.added}/${counts.deleted}/${counts.changed}|${hunks}`;
+    }
     /** Set while this script mutates the DOM, so the observer ignores its own writes. */
     let suppressObserver = false;
     let pill;
@@ -314,7 +388,7 @@
             + 'border:1px solid var(--borderColor-muted,#30363d);border-radius:6px;';
 
         const label = document.createElement('span');
-        label.textContent = '🧪';
+        label.textContent = ruleName === 'unchanged since your last visit' ? '⏸' : '🧪';
         const name = document.createElement('span');
         name.textContent = path;
         name.style.cssText = 'color:var(--fgColor-default,#e6edf3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
@@ -334,14 +408,14 @@
         return stub;
     }
 
-    function hideFile(container, path, ruleName) {
+    function hideFile(container, path, ruleName, state) {
         const stub = makeStub(container, path, ruleName);
         container.__ghtfStub = stub;
         container.__ghtfPrevDisplay = container.style.display;
         container.parentNode.insertBefore(stub, container);
         container.classList.add(HIDDEN_CLASS);
         container.style.display = 'none';
-        container.setAttribute(STATE_ATTR, 'hidden');
+        container.setAttribute(STATE_ATTR, state || 'hidden');
     }
 
     /** Unhide one file but keep it marked, so the next pass does not re-hide it. */
@@ -379,7 +453,7 @@
      * One pill shape shared with the comment filter's, so the two read as one
      * control: state on the left, the action it performs in a chip on the right.
      */
-    function renderPill(containerCount, unidentified, commented) {
+    function renderPill(containerCount, unidentified, commented, unchanged) {
         if (!pill) {
             pill = document.createElement('div');
             pill.id = PILL_ID;
@@ -407,7 +481,9 @@
         }
         pill.style.display = '';
 
-        const hidden = document.querySelectorAll('.' + STUB_CLASS).length;
+        // By state, not by stub: an unchanged file also wears a stub and is not
+        // a test file.
+        const hidden = document.querySelectorAll(`[${STATE_ATTR}="hidden"]`).length;
         const tests = document.querySelectorAll(`[${STATE_ATTR}="hidden"],[${STATE_ATTR}="shown"]`).length;
         const plural = n => (n === 1 ? '' : 's');
         let state;
@@ -426,7 +502,7 @@
             action = '';
         }
         pill.style.opacity = enabled ? '1' : '0.85';
-        setPillContent(pill, '🧪', state, action, unidentified, commented);
+        setPillContent(pill, '🧪', state, action, unidentified, commented, unchanged);
 
         if (unidentified > 0) {
             pill.title = `${unidentified} file${plural(unidentified)} whose path this script could not read`
@@ -439,7 +515,7 @@
     }
 
     /** Shared with pill-skin.js, which gives the comment filter's pill the same shape. */
-    function setPillContent(host, emoji, state, action, unidentified, commented) {
+    function setPillContent(host, emoji, state, action, unidentified, commented, unchanged) {
         host.replaceChildren();
         const label = document.createElement('span');
         label.className = 'ghdf-pill-label';
@@ -451,6 +527,12 @@
             warn.textContent = `⚠ ${unidentified} unread`;
             warn.style.color = 'var(--fgColor-attention,#d29922)';
             host.append(warn);
+        }
+        if (unchanged > 0) {
+            const held = document.createElement('span');
+            held.textContent = `· ${unchanged} unchanged`;
+            held.title = 'Identical to your last visit to this pull request';
+            host.append(held);
         }
         if (commented > 0) {
             const kept = document.createElement('span');
@@ -539,7 +621,8 @@
             knownPaths.add(path);
             const anchor = anchorOf(container, true);
             if (anchor) pathByAnchor.set(anchor, path);
-            const verdict = container.getAttribute(STATE_ATTR) === 'hidden' ? 'hidden' : 'source';
+            const state = container.getAttribute(STATE_ATTR);
+            const verdict = state === 'hidden' || state === 'unchanged' ? 'hidden' : 'source';
             if (verdict === 'hidden') hiddenPaths.add(path);
             const base = path.split('/').pop();
             const seen = byBasename.get(base);
@@ -646,7 +729,7 @@
     }
 
     function renderVisibleTotals(containers) {
-        const hiddenFiles = containers.filter(c => c.getAttribute(STATE_ATTR) === 'hidden');
+        const hiddenFiles = containers.filter(c => HIDDEN_STATES.test(c.getAttribute(STATE_ATTR)));
         const host = diffstatHost();
         if (!host) {
             // The toolbar holding the totals can render after the diff. Nothing
@@ -693,7 +776,7 @@
         } else {
             visible = { added: 0, deleted: 0, changed: 0, signed: true };
             for (const container of containers) {
-                if (container.getAttribute(STATE_ATTR) === 'hidden') continue;
+                if (HIDDEN_STATES.test(container.getAttribute(STATE_ATTR))) continue;
                 const counts = fileCounts(container);
                 visible.added += counts.added;
                 visible.deleted += counts.deleted;
@@ -714,7 +797,7 @@
                 : `${hiddenChanged.toLocaleString()} changed lines`})`;
         badge.replaceChildren();
         const lead = document.createElement('span');
-        lead.textContent = '\u00b7 excluding tests ';
+        lead.textContent = onlyChanged ? '\u00b7 excluding hidden ' : '\u00b7 excluding tests ';
         badge.append(lead);
         if (visible.signed) {
             const plus = document.createElement('span');
@@ -743,11 +826,15 @@
         if (activeScope !== repoScope()) {
             activeScope = repoScope();
             enabled = readEnabled();
+            onlyChanged = readOnlyChanged();
             statHost = null;
         }
         const containers = fileContainers();
         let unidentified = 0;
         let commented = 0;
+        let unchanged = 0;
+        const baseline = readBaseline();
+        const snapshot = {};
         for (const container of containers) {
             const state = container.getAttribute(STATE_ATTR);
             if (!enabled) {
@@ -766,6 +853,11 @@
                 commented++;
                 continue;
             }
+            if (state === 'unchanged') {
+                unchanged++;
+                if (container.__ghtfPath) snapshot[container.__ghtfPath] = fingerprint(container);
+                continue;
+            }
             if (state) continue;
             const path = filePath(container);
             // An unresolved path is left unmarked so the next pass retries once
@@ -778,7 +870,18 @@
             }
             container.__ghtfPath = path;
             const ruleName = matchRule(path);
+            snapshot[path] = fingerprint(container);
             if (!ruleName) {
+                if (onlyChanged && baseline[path] === snapshot[path]) {
+                    if (hasReviewComments(container)) {
+                        container.setAttribute(STATE_ATTR, 'commented');
+                        commented++;
+                        continue;
+                    }
+                    hideFile(container, path, 'unchanged since your last visit', 'unchanged');
+                    unchanged++;
+                    continue;
+                }
                 container.setAttribute(STATE_ATTR, 'source');
                 continue;
             }
@@ -787,11 +890,12 @@
                 commented++;
                 continue;
             }
-            hideFile(container, path, ruleName);
+            hideFile(container, path, ruleName, 'hidden');
         }
+        if (Object.keys(snapshot).length > 0) rememberSnapshot(Object.assign({}, baseline, snapshot));
         applyTree(containers);
         renderVisibleTotals(containers);
-        renderPill(containers.length, unidentified, commented);
+        renderPill(containers.length, unidentified, commented, unchanged);
         setTimeout(() => { suppressObserver = false; }, 0);
     }
 
@@ -864,6 +968,16 @@
         },
         get repo() {
             return repoScope();
+        },
+        /** Collapse files identical to the previous visit to this pull request. */
+        get onlyChanged() {
+            return onlyChanged;
+        },
+        set onlyChanged(value) {
+            onlyChanged = Boolean(value);
+            localStorage.setItem(onlyChangedKey(), String(onlyChanged));
+            reset();
+            apply();
         },
         /** Hand this repository back to the global default. */
         clearRepoPreference() {
