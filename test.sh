@@ -43,6 +43,10 @@ echo
 echo "=== extension content scripts (built bundle) ==="
 node "$HERE/test/extension.test.js" | grep -E '^(  FAIL|ALL|[0-9]+ EXTENSION)'
 
+echo
+echo "=== keyboard shortcuts (built bundle) ==="
+node "$HERE/test/shortcuts.test.js" | grep -E '^(  FAIL|ALL|[0-9]+ SHORTCUT)'
+
 if [[ -f "$HERE/hide-test-files.min.js" ]]; then
     echo
     echo "=== DOM behaviour, /files markup (minified build) ==="

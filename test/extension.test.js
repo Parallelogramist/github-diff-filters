@@ -46,7 +46,9 @@ function loadContentScripts(window) {
     ok(contentScripts.matches.length === 1 && contentScripts.matches[0] === 'https://github.com/*',
         'matched across github.com, because Turbo navigation never reloads the document');
     ok(contentScripts.js.indexOf('bootstrap.js') === 2, 'bootstrap runs after both filters');
-    ok(contentScripts.js[contentScripts.js.length - 1] === 'pill-skin.js', 'pill skin runs last');
+    ok(contentScripts.js.indexOf('pill-skin.js') === 3, 'the pill skin runs after the bootstrap');
+    ok(contentScripts.js[contentScripts.js.length - 1] === 'controls.js',
+        'the controls run last, once both pills can exist');
     for (const file of contentScripts.js) {
         ok(fs.existsSync(path.join(EXT, file)), `${file} exists`);
     }
@@ -117,6 +119,16 @@ function loadContentScripts(window) {
         'test pill offers Hide when files are shown');
     dom.window.__ghTestFileFilter.enabled = true;
     await sleep(50);
+
+    console.log('\n-- both pills dock into one control --');
+    await sleep(300);
+    const dock = doc.getElementById('ghdf-dock');
+    ok(!!dock, 'dock created');
+    ok(dock && dock.contains(doc.getElementById('ghtf-pill')), 'test pill docked');
+    ok(dock && dock.contains(doc.getElementById('ghccf-pill')), 'comment pill docked');
+    ok(doc.getElementById('ghtf-pill').style.position === 'static',
+        'the docked pill stops placing itself');
+    ok(/j\/k next and previous/.test(dock.title), 'dock names the shortcuts');
 
     console.log('\n-- a second run re-applies instead of toggling off --');
     const before = doc.querySelectorAll('.ghtf-stub').length;
