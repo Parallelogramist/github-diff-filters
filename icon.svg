@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+    <!-- Three centred bars of descending width: a filter silhouette drawn in
+         diff colours. Bar widths and weights are set by what survives 16px,
+         which is the size Chrome shows most often. -->
+    <defs>
+        <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#1c2230"/>
+            <stop offset="1" stop-color="#0d1117"/>
+        </linearGradient>
+    </defs>
+    <rect x="2" y="2" width="124" height="124" rx="28" fill="url(#tile)"/>
+    <rect x="2" y="2" width="124" height="124" rx="28" fill="none" stroke="#484f58" stroke-width="4"/>
+    <rect x="29" y="31" width="70" height="18" rx="9" fill="#3fb950"/>
+    <rect x="39" y="55" width="50" height="18" rx="9" fill="#f85149"/>
+    <rect x="48" y="79" width="32" height="18" rx="9" fill="#8b949e"/>
+</svg>

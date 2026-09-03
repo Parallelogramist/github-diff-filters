@@ -1,0 +1,798 @@
+/**
+ * GitHub PR diff: hide test files.
+ *
+ * Standalone bookmarklet. Independent of hide-comment-diffs — separate storage
+ * key, DOM markers and pill, so both can run on the same page.
+ *
+ * Re-running the bookmarklet toggles hiding on and off.
+ */
+(() => {
+    'use strict';
+
+    if (window.__ghTestFileFilter) {
+        window.__ghTestFileFilter.enabled = !window.__ghTestFileFilter.enabled;
+        return;
+    }
+
+    const ENABLED_KEY = 'gh-hide-test-files:enabled';
+    const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';
+    const STATE_ATTR = 'data-ghtf';
+    const HIDDEN_CLASS = 'ghtf-hidden-file';
+    const STUB_CLASS = 'ghtf-stub';
+    const PILL_ID = 'ghtf-pill';
+    const DEBOUNCE_MS = 300;
+    const COMMENT_FILTER_PILL_ID = 'ghccf-pill';
+
+    const FILE_SELECTOR = ['.js-file', '[class^="Diff-module__diffTargetable"]'].join(',');
+    const ADDITION_SELECTOR = ['.blob-code-addition', 'td[data-code-marker="+"]'].join(',');
+    const DELETION_SELECTOR = ['.blob-code-deletion', 'td[data-code-marker="-"]'].join(',');
+    const PATH_ATTRS = ['data-path', 'data-file-path', 'data-tagsearch-path'];
+    const HEADER_SELECTOR = [
+        '.file-info', '.file-header',
+        '[class*="DiffHeader"]', '[class*="diffHeader"]',
+        '[class*="FileHeader"]', '[class*="fileHeader"]'
+    ].join(',');
+    const DIFFSTAT_LEAF = /^[+\-\u2212\u2013]?\d[\d,]*$/;
+    const TREE_STATE_ATTR = 'data-ghtf-tree';
+    const TREE_ITEM_SELECTOR = '[role="treeitem"]';
+    const TREE_GROUP_SELECTOR = '[role="group"],[role="treeitem"]';
+    const VISIBLE_STAT_CLASS = 'ghtf-visible-stat';
+    const ANCHOR_ID = /(diff-[0-9a-f]{16,})$/i;
+    const CONTROL_LEAF = /^(viewed|expand|collapse|copy|comment|comments|hidden|load|diff|show|hide|unchanged|binary|\u2026|\u22ef)$/i;
+
+    /**
+     * A file is a test file by path shape: a directory segment that only ever
+     * holds tests, or a filename in one of the per-ecosystem test conventions.
+     * Content is never inspected — the header renders long before the diff body,
+     * so a path rule can hide a file without waiting for it to load.
+     */
+    const BUILT_IN_RULES = [
+        ['test dir', /(^|\/)(tests?|specs?|__tests__|__mocks__|__snapshots__|__fixtures__|testdata|test_data|e2e|cypress|playwright)\//i],
+        ['js/ts spec', /[.\-_](spec|test|cy)\.[cm]?[jt]sx?$/i],
+        ['py test', /(^|\/)(test_[^/]+|[^/]+_test|conftest)\.py$/i],
+        ['go test', /_test\.go$/i],
+        ['rb spec', /_(spec|test)\.rb$/i],
+        ['jvm test', /(Test|Tests|TestCase|Spec|Specs|IT)\.(java|kt|kts|scala|groovy)$/],
+        ['dotnet test', /(Test|Tests|Spec|Specs)\.(cs|fs|vb)$/],
+        ['php test', /Test\.php$/],
+        ['snapshot', /\.snap$/i],
+        ['cucumber', /\.feature$/i],
+        ['test config', /(^|\/)(jest|vitest|karma|jasmine|playwright|cypress|codecept|protractor|wdio|nyc)\.[^/]*(conf|config|setup)\.[cm]?[jt]s$/i]
+    ];
+
+    /**
+     * Set by the extension's bootstrap before it runs this filter; a bookmarklet
+     * click leaves it unset. Auto-installed, the filter outlives the diff screen
+     * that started it, so the "no diff here" nudge would fire on every page.
+     */
+    const AUTO_INSTALLED = window.__ghDiffFilterAuto === true;
+
+    let enabled = localStorage.getItem(ENABLED_KEY) !== 'false';
+    /** Set while this script mutates the DOM, so the observer ignores its own writes. */
+    let suppressObserver = false;
+    let pill;
+
+    // ---------------------------------------------------------------- rules
+
+    function loadCustomRules() {
+        try {
+            const raw = JSON.parse(localStorage.getItem(CUSTOM_RULES_KEY) || '[]');
+            return raw.map(source => ['custom', new RegExp(source, 'i')]);
+        } catch (err) {
+            console.warn('[test-file-filter] ignoring unparseable custom rules', err);
+            return [];
+        }
+    }
+
+    let rules = BUILT_IN_RULES.concat(loadCustomRules());
+
+    /** @returns {string|null} the name of the rule that claims this path. */
+    function matchRule(path) {
+        for (const [name, re] of rules) {
+            if (re.test(path)) return name;
+        }
+        return null;
+    }
+
+    // ------------------------------------------------------------ file info
+
+    function fileContainers() {
+        const all = Array.from(document.querySelectorAll(FILE_SELECTOR));
+        return all.filter(el => !all.some(other => other !== el && other.contains(el)));
+    }
+
+    /** Renames render as "old → new"; the new path is the one to classify. */
+    function normalizePath(raw) {
+        return (raw || '').split('→').pop().trim();
+    }
+
+    /** A path carries no whitespace and has either a directory separator or an extension. */
+    function looksLikePath(value) {
+        return value.length > 1 && value.length < 400 && !/\s/.test(value)
+            && (value.includes('/') || /\.[A-Za-z0-9]+$/.test(value));
+    }
+
+    /** Headers render the diffstat next to the path, and adjacent spans concatenate. */
+    function trimGluedStat(value) {
+        const stripped = value.replace(/(?:[+\-\u2212\u2013]\d[\d,]*)+$/, '');
+        return /\.[A-Za-z0-9]+$/.test(stripped) ? stripped : value;
+    }
+
+    function pathFromAttributes(container) {
+        for (const attr of PATH_ATTRS) {
+            const own = container.getAttribute(attr);
+            if (own) return normalizePath(own);
+            const nested = container.querySelector(`[${attr}]`);
+            const value = nested && nested.getAttribute(attr);
+            if (value) return normalizePath(value);
+        }
+        return '';
+    }
+
+    function headerOf(container) {
+        return container.querySelector(HEADER_SELECTOR) || container.firstElementChild;
+    }
+
+    /**
+     * Only a path-shaped label counts — headers also carry "Copy", "Viewed" and
+     * the like. Scoped to the header because a diff line can contain a link
+     * whose title is some other file's path.
+     */
+    function pathFromLabels(container) {
+        const scope = headerOf(container) || container;
+        for (const el of scope.querySelectorAll('a[title],a[aria-label]')) {
+            const candidate = normalizePath(el.getAttribute('title') || el.getAttribute('aria-label') || '');
+            if (looksLikePath(candidate)) return candidate;
+        }
+        return '';
+    }
+
+    /**
+     * Last resort for markup that carries the path only as text. Text nodes are
+     * read as separate leaves rather than via textContent, because the header
+     * splits a path across a directory span and a filename span and glues the
+     * diffstat onto the end.
+     */
+    function pathFromText(container) {
+        const header = headerOf(container);
+        if (!header) return '';
+        const leaves = [];
+        const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
+        for (let node = walker.nextNode(); node && leaves.length < 12; node = walker.nextNode()) {
+            const text = node.nodeValue.trim();
+            if (text) leaves.push(text);
+        }
+        let joined = '';
+        for (const leaf of leaves) {
+            if (DIFFSTAT_LEAF.test(leaf) || CONTROL_LEAF.test(leaf) || /\s/.test(leaf)) break;
+            // Chevrons and status glyphs precede the path; a path fragment can
+            // only start with a character a filename starts with.
+            if (!joined && !/^[\w.@~]/.test(leaf)) continue;
+            joined += leaf;
+        }
+        const assembled = trimGluedStat(normalizePath(joined));
+        if (looksLikePath(assembled)) return assembled;
+        // A leading label would have corrupted the assembly; fall back to the
+        // first leaf that stands on its own as a path.
+        for (const leaf of leaves) {
+            const candidate = trimGluedStat(normalizePath(leaf));
+            if (looksLikePath(candidate)) return candidate;
+        }
+        return '';
+    }
+
+    function filePath(container) {
+        return pathFromAttributes(container)
+            || pathFromLabels(container)
+            || pathFromText(container);
+    }
+
+    function parseCount(text) {
+        return Number(String(text == null ? '' : text).replace(/[^\d]/g, '')) || 0;
+    }
+
+    /** The file header's combined changed-lines figure, present even when the diff is collapsed. */
+    function changedTotal(container) {
+        const stat = (headerOf(container) || container).querySelector('.diffstat')
+            || container.querySelector('.diffstat');
+        const lead = stat && (stat.textContent || '').trim().split(/\s+/)[0];
+        return lead && /^\d[\d,]*$/.test(lead) ? parseCount(lead) : null;
+    }
+
+    /**
+     * `signed` says whether the +/- split is trustworthy. Counting rendered rows
+     * looks like a signed answer but silently under-reports a file GitHub left
+     * collapsed, so those counts only count when they foot to the header's
+     * changed-lines total.
+     *
+     * @returns {{added: number, deleted: number, changed: number, signed: boolean, known: boolean}}
+     */
+    function fileCounts(container) {
+        const labelled = container.querySelector('[aria-label*="addition" i]');
+        const fromLabel = labelled && (labelled.getAttribute('aria-label') || '').match(/\d[\d,]*/g);
+        if (fromLabel && fromLabel.length >= 2) {
+            const added = parseCount(fromLabel[0]);
+            const deleted = parseCount(fromLabel[1]);
+            return { added, deleted, changed: added + deleted, signed: true, known: true };
+        }
+
+        const header = headerOf(container);
+        if (header) {
+            const leaves = [];
+            const walker = document.createTreeWalker(header, NodeFilter.SHOW_TEXT);
+            for (let node = walker.nextNode(); node && leaves.length < 6; node = walker.nextNode()) {
+                const text = node.nodeValue.trim();
+                if (DIFFSTAT_LEAF.test(text)) leaves.push(text);
+            }
+            const plus = leaves.find(text => text.startsWith('+'));
+            const minus = leaves.find(text => /^[-\u2212\u2013]/.test(text));
+            if (plus || minus) {
+                const added = parseCount(plus);
+                const deleted = parseCount(minus);
+                return { added, deleted, changed: added + deleted, signed: true, known: true };
+            }
+        }
+
+        const added = container.querySelectorAll(ADDITION_SELECTOR).length;
+        const deleted = container.querySelectorAll(DELETION_SELECTOR).length;
+        const total = changedTotal(container);
+        if (total !== null) {
+            return { added, deleted, changed: total, signed: added + deleted === total, known: true };
+        }
+        return { added, deleted, changed: added + deleted, signed: true, known: added > 0 || deleted > 0 };
+    }
+
+    function formatStat(counts) {
+        if (!counts.known) return '';
+        return counts.signed
+            ? `+${counts.added.toLocaleString()} \u2212${counts.deleted.toLocaleString()}`
+            : `${counts.changed.toLocaleString()} lines`;
+    }
+
+    // -------------------------------------------------------- hide / restore
+
+    function makeStub(container, path, ruleName) {
+        const stub = document.createElement('div');
+        stub.className = STUB_CLASS;
+        stub.title = `matched by rule: ${ruleName} — click to show this file`;
+        stub.style.cssText = 'display:flex;gap:8px;align-items:baseline;cursor:pointer;'
+            + 'font:11px/1.9 var(--fontStack-monospace,ui-monospace,monospace);'
+            + 'color:var(--fgColor-muted,#8b949e);padding:1px 10px;margin:2px 0;'
+            + 'background:var(--bgColor-muted,#161b22);'
+            + 'border:1px solid var(--borderColor-muted,#30363d);border-radius:6px;';
+
+        const label = document.createElement('span');
+        label.textContent = '🧪';
+        const name = document.createElement('span');
+        name.textContent = path;
+        name.style.cssText = 'color:var(--fgColor-default,#e6edf3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        const stat = document.createElement('span');
+        stat.textContent = formatStat(fileCounts(container));
+        const hint = document.createElement('span');
+        hint.textContent = 'click to show';
+        hint.style.marginLeft = 'auto';
+        stub.append(label, name, stat, hint);
+
+        stub.addEventListener('click', () => {
+            suppressObserver = true;
+            revealFile(container);
+            refreshChrome();
+            setTimeout(() => { suppressObserver = false; }, 0);
+        });
+        return stub;
+    }
+
+    function hideFile(container, path, ruleName) {
+        const stub = makeStub(container, path, ruleName);
+        container.__ghtfStub = stub;
+        container.__ghtfPrevDisplay = container.style.display;
+        container.parentNode.insertBefore(stub, container);
+        container.classList.add(HIDDEN_CLASS);
+        container.style.display = 'none';
+        container.setAttribute(STATE_ATTR, 'hidden');
+    }
+
+    /** Unhide one file but keep it marked, so the next pass does not re-hide it. */
+    function revealFile(container) {
+        const stub = container.__ghtfStub
+            || (container.previousElementSibling && container.previousElementSibling.classList.contains(STUB_CLASS)
+                ? container.previousElementSibling
+                : null);
+        if (stub) stub.remove();
+        container.__ghtfStub = null;
+        container.classList.remove(HIDDEN_CLASS);
+        container.style.display = container.__ghtfPrevDisplay || '';
+        container.setAttribute(STATE_ATTR, 'shown');
+    }
+
+    function clearFile(container) {
+        revealFile(container);
+        container.removeAttribute(STATE_ATTR);
+    }
+
+    // ------------------------------------------------------------------ pill
+
+    function toast(message) {
+        const el = document.createElement('div');
+        el.textContent = message;
+        el.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:2147483000;max-width:320px;'
+            + 'font:12px/1.4 -apple-system,system-ui,sans-serif;background:rgba(20,22,26,.96);color:#e6edf3;'
+            + 'border:1px solid rgba(255,255,255,.15);border-radius:8px;padding:9px 13px;'
+            + 'box-shadow:0 4px 16px rgba(0,0,0,.4);';
+        document.body.appendChild(el);
+        setTimeout(() => el.remove(), 4000);
+    }
+
+    /**
+     * One pill shape shared with the comment filter's, so the two read as one
+     * control: state on the left, the action it performs in a chip on the right.
+     */
+    function renderPill(containerCount, unidentified) {
+        if (!pill) {
+            pill = document.createElement('div');
+            pill.id = PILL_ID;
+            pill.style.cssText = 'position:fixed;right:16px;z-index:2147483000;'
+                + 'display:flex;align-items:center;gap:9px;'
+                + 'font:500 12px/1 var(--fontStack-sansSerif,-apple-system,system-ui,sans-serif);'
+                + 'background:var(--bgColor-default,#0d1117);color:var(--fgColor-muted,#8b949e);'
+                + 'border:1px solid var(--borderColor-default,#30363d);border-radius:999px;'
+                + 'padding:9px 10px 9px 14px;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.4);'
+                + 'user-select:none;max-width:340px;white-space:nowrap;';
+            pill.addEventListener('click', () => { api.enabled = !enabled; });
+            document.body.appendChild(pill);
+        }
+        // Sit above the comment filter's pill, measured rather than assumed.
+        const neighbour = document.getElementById(COMMENT_FILTER_PILL_ID);
+        pill.style.bottom = neighbour ? `${neighbour.offsetHeight + 24}px` : '16px';
+
+        if (containerCount === 0) {
+            pill.style.display = 'none';
+            if (!AUTO_INSTALLED) toast('No diff found on this page — open a PR’s "Files changed" tab.');
+            return;
+        }
+        pill.style.display = '';
+
+        const hidden = document.querySelectorAll('.' + STUB_CLASS).length;
+        const tests = document.querySelectorAll(`[${STATE_ATTR}="hidden"],[${STATE_ATTR}="shown"]`).length;
+        const plural = n => (n === 1 ? '' : 's');
+        let state;
+        let action;
+        if (!enabled) {
+            state = tests > 0 ? `${tests} test file${plural(tests)} shown` : 'Test files shown';
+            action = 'Hide';
+        } else if (hidden > 0) {
+            state = `${hidden} test file${plural(hidden)} hidden`;
+            action = 'Show';
+        } else if (tests > 0) {
+            state = `${tests} test file${plural(tests)} shown`;
+            action = 'Hide';
+        } else {
+            state = 'No test files in this diff';
+            action = '';
+        }
+        pill.style.opacity = enabled ? '1' : '0.85';
+        setPillContent(pill, '🧪', state, action, unidentified);
+
+        if (unidentified > 0) {
+            pill.title = `${unidentified} file${plural(unidentified)} whose path this script could not read`
+                + ' — run __ghTestFileFilter.debug() in the console';
+            pill.style.borderColor = 'var(--borderColor-attention-emphasis,#d29922)';
+        } else {
+            pill.title = '';
+            pill.style.borderColor = 'var(--borderColor-default,#30363d)';
+        }
+    }
+
+    /** Shared with pill-skin.js, which gives the comment filter's pill the same shape. */
+    function setPillContent(host, emoji, state, action, unidentified) {
+        host.replaceChildren();
+        const label = document.createElement('span');
+        label.className = 'ghdf-pill-label';
+        label.textContent = `${emoji} ${state}`;
+        label.style.color = 'var(--fgColor-default,#e6edf3)';
+        host.append(label);
+        if (unidentified > 0) {
+            const warn = document.createElement('span');
+            warn.textContent = `⚠ ${unidentified} unread`;
+            warn.style.color = 'var(--fgColor-attention,#d29922)';
+            host.append(warn);
+        }
+        if (!action) return;
+        const chip = document.createElement('span');
+        chip.className = 'ghdf-pill-action';
+        chip.textContent = action;
+        chip.style.cssText = 'padding:3px 9px;border-radius:999px;font-weight:600;'
+            + 'background:var(--bgColor-neutral-muted,#282e36);color:var(--fgColor-default,#e6edf3);';
+        host.append(chip);
+    }
+
+    // ------------------------------------------------------------- file tree
+
+    /** The `diff-<sha>` anchor both a diff container and its tree row are keyed by. */
+    function anchorOf(el, allowDescendantLink) {
+        const fromId = el.id && el.id.match(ANCHOR_ID);
+        if (fromId) return fromId[1].toLowerCase();
+        if (!allowDescendantLink) return '';
+        const link = el.querySelector('a[href*="#diff-"]');
+        const inHref = link && (link.getAttribute('href') || '').match(/#(diff-[0-9a-f]{16,})/i);
+        return inHref ? inHref[1].toLowerCase() : '';
+    }
+
+    function isDirectoryRow(row) {
+        const declared = row.getAttribute('data-tree-entry-type');
+        if (declared) return declared === 'directory';
+        return !!row.querySelector(TREE_GROUP_SELECTOR);
+    }
+
+    /** A row's own label, ignoring the text of any nested rows. */
+    function rowLabel(row) {
+        const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT, {
+            acceptNode(node) {
+                for (let el = node.parentElement; el && el !== row; el = el.parentElement) {
+                    if (el.matches && el.matches(TREE_GROUP_SELECTOR)) return NodeFilter.FILTER_REJECT;
+                }
+                return NodeFilter.FILTER_ACCEPT;
+            }
+        });
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const text = node.nodeValue.trim();
+            if (text && !DIFFSTAT_LEAF.test(text) && !CONTROL_LEAF.test(text)) return text.split(/\s+/)[0];
+        }
+        return '';
+    }
+
+    /** Trees that show only leaf names need the ancestor rows to rebuild a path. */
+    function pathFromAncestors(row) {
+        const parts = [rowLabel(row)];
+        for (let el = row.parentElement; el; el = el.parentElement) {
+            if (el.matches && el.matches(TREE_ITEM_SELECTOR)) parts.unshift(rowLabel(el));
+        }
+        return parts.filter(Boolean).join('/').replace(/\/{2,}/g, '/');
+    }
+
+    function treeRowPath(row, index) {
+        const anchor = anchorOf(row, false);
+        if (anchor && index.pathByAnchor.has(anchor)) return index.pathByAnchor.get(anchor);
+        for (const attr of PATH_ATTRS) {
+            const value = row.getAttribute(attr);
+            if (value) return normalizePath(value);
+        }
+        const payload = row.getAttribute('data-hydro-click-payload');
+        const inPayload = payload && payload.match(/"path":"([^"]+)"/);
+        if (inPayload) return inPayload[1];
+        const label = rowLabel(row);
+        if (index.knownPaths.has(label)) return label;
+        const rebuilt = pathFromAncestors(row);
+        return index.knownPaths.has(rebuilt) ? rebuilt : '';
+    }
+
+    /** What the diff pane already decided, keyed every way a tree row can be matched. */
+    function buildIndex(containers) {
+        const pathByAnchor = new Map();
+        const knownPaths = new Set();
+        const hiddenPaths = new Set();
+        const byBasename = new Map();
+        for (const container of containers) {
+            const path = container.__ghtfPath;
+            if (!path) continue;
+            knownPaths.add(path);
+            const anchor = anchorOf(container, true);
+            if (anchor) pathByAnchor.set(anchor, path);
+            const verdict = container.getAttribute(STATE_ATTR) === 'hidden' ? 'hidden' : 'source';
+            if (verdict === 'hidden') hiddenPaths.add(path);
+            const base = path.split('/').pop();
+            const seen = byBasename.get(base);
+            byBasename.set(base, seen && seen !== verdict ? 'mixed' : verdict);
+        }
+        return { pathByAnchor, knownPaths, hiddenPaths, byBasename };
+    }
+
+    function setTreeRowHidden(row, hide) {
+        if (hide) {
+            if (row.getAttribute(TREE_STATE_ATTR) === 'hidden') return;
+            row.__ghtfTreeDisplay = row.style.display;
+            row.style.display = 'none';
+            row.setAttribute(TREE_STATE_ATTR, 'hidden');
+        } else if (row.hasAttribute(TREE_STATE_ATTR)) {
+            row.style.display = row.__ghtfTreeDisplay || '';
+            row.removeAttribute(TREE_STATE_ATTR);
+        }
+    }
+
+    /**
+     * Mirror the diff pane's verdicts into the file tree, so a hidden file does
+     * not still occupy a navigation row. A directory goes only when every file
+     * under it went.
+     */
+    function applyTree(containers) {
+        const rows = Array.from(document.querySelectorAll(TREE_ITEM_SELECTOR));
+        if (rows.length === 0) return 0;
+        const index = buildIndex(containers);
+        let hiddenRows = 0;
+        const directories = [];
+        for (const row of rows) {
+            if (isDirectoryRow(row)) {
+                directories.push(row);
+                continue;
+            }
+            const path = treeRowPath(row, index);
+            const hide = path
+                ? index.hiddenPaths.has(path)
+                : index.byBasename.get(rowLabel(row).split('/').pop()) === 'hidden';
+            setTreeRowHidden(row, hide);
+            if (hide) hiddenRows++;
+        }
+        for (const directory of directories) {
+            const files = Array.from(directory.querySelectorAll(TREE_ITEM_SELECTOR)).filter(row => !isDirectoryRow(row));
+            const allHidden = files.length > 0 && files.every(row => row.getAttribute(TREE_STATE_ATTR) === 'hidden');
+            setTreeRowHidden(directory, allHidden);
+        }
+        return hiddenRows;
+    }
+
+    function clearTree() {
+        for (const row of document.querySelectorAll(`[${TREE_STATE_ATTR}]`)) setTreeRowHidden(row, false);
+    }
+
+    // ------------------------------------------- visible change-count summary
+
+    function diffstatHost() {
+        const byId = document.getElementById('diffstat');
+        if (byId) return byId;
+        const scope = document.querySelector('main') || document.body;
+        for (const el of scope.querySelectorAll('span,div')) {
+            if (!/^\+[\d,]+$/.test((el.textContent || '').trim())) continue;
+            if (el.closest(FILE_SELECTOR)) continue;
+            const parent = el.parentElement;
+            if (parent && /[-\u2212\u2013][\d,]+/.test(parent.textContent || '')) return parent;
+        }
+        return null;
+    }
+
+    /** The PR's own totals, read past our injected span. */
+    function hostTotals(host) {
+        const added = host.querySelector('.color-fg-success,[class*="fgColor-success"]');
+        const deleted = host.querySelector('.color-fg-danger,[class*="fgColor-danger"]');
+        if (added && deleted) {
+            return { added: parseCount(added.textContent), deleted: parseCount(deleted.textContent) };
+        }
+        const text = Array.from(host.childNodes)
+            .filter(node => !(node.nodeType === 1 && node.classList && node.classList.contains(VISIBLE_STAT_CLASS)))
+            .map(node => node.textContent)
+            .join(' ');
+        const plus = text.match(/\+\s*([\d,]+)/);
+        const minus = text.match(/[-\u2212\u2013]\s*([\d,]+)/);
+        return plus && minus ? { added: parseCount(plus[1]), deleted: parseCount(minus[1]) } : null;
+    }
+
+    function renderVisibleTotals(containers) {
+        const host = diffstatHost();
+        if (!host) return null;
+        const existing = host.querySelector('.' + VISIBLE_STAT_CLASS);
+        const hiddenFiles = containers.filter(c => c.getAttribute(STATE_ATTR) === 'hidden');
+        if (!enabled || hiddenFiles.length === 0) {
+            if (existing) existing.remove();
+            return null;
+        }
+
+        let hiddenAdded = 0;
+        let hiddenDeleted = 0;
+        let hiddenChanged = 0;
+        let hiddenSigned = true;
+        for (const container of hiddenFiles) {
+            const counts = fileCounts(container);
+            hiddenAdded += counts.added;
+            hiddenDeleted += counts.deleted;
+            hiddenChanged += counts.changed;
+            if (!counts.signed) hiddenSigned = false;
+        }
+
+        // Subtracting from the PR's own totals keeps the figure footing to the
+        // one beside it. Where the hidden files' +/- split is not trustworthy,
+        // report changed lines rather than invent a split.
+        const totals = hostTotals(host);
+        let visible;
+        if (totals && hiddenSigned) {
+            visible = {
+                added: Math.max(0, totals.added - hiddenAdded),
+                deleted: Math.max(0, totals.deleted - hiddenDeleted),
+                signed: true
+            };
+        } else if (totals) {
+            visible = { changed: Math.max(0, totals.added + totals.deleted - hiddenChanged), signed: false };
+        } else {
+            visible = { added: 0, deleted: 0, changed: 0, signed: true };
+            for (const container of containers) {
+                if (container.getAttribute(STATE_ATTR) === 'hidden') continue;
+                const counts = fileCounts(container);
+                visible.added += counts.added;
+                visible.deleted += counts.deleted;
+                visible.changed += counts.changed;
+                if (!counts.signed) visible.signed = false;
+            }
+        }
+
+        const badge = existing || document.createElement('span');
+        if (!existing) {
+            badge.className = VISIBLE_STAT_CLASS;
+            badge.style.cssText = 'margin-left:8px;white-space:nowrap;font-weight:400;'
+                + 'color:var(--fgColor-muted,#8b949e);';
+            host.appendChild(badge);
+        }
+        badge.title = `Excluding ${hiddenFiles.length} hidden test file${hiddenFiles.length === 1 ? '' : 's'}`
+            + ` (${hiddenSigned ? `+${hiddenAdded.toLocaleString()} \u2212${hiddenDeleted.toLocaleString()}`
+                : `${hiddenChanged.toLocaleString()} changed lines`})`;
+        badge.replaceChildren();
+        const lead = document.createElement('span');
+        lead.textContent = '\u00b7 excluding tests ';
+        badge.append(lead);
+        if (visible.signed) {
+            const plus = document.createElement('span');
+            plus.style.color = 'var(--fgColor-success,#3fb950)';
+            plus.textContent = `+${visible.added.toLocaleString()}`;
+            const minus = document.createElement('span');
+            minus.style.color = 'var(--fgColor-danger,#f85149)';
+            minus.style.marginLeft = '4px';
+            minus.textContent = `\u2212${visible.deleted.toLocaleString()}`;
+            badge.append(plus, minus);
+        } else {
+            const changed = document.createElement('span');
+            changed.style.color = 'var(--fgColor-default,#e6edf3)';
+            changed.textContent = `${visible.changed.toLocaleString()} lines`;
+            badge.append(changed);
+        }
+        return visible;
+    }
+
+    // ----------------------------------------------------------------- apply
+
+    function apply() {
+        suppressObserver = true;
+        const containers = fileContainers();
+        let unidentified = 0;
+        for (const container of containers) {
+            const state = container.getAttribute(STATE_ATTR);
+            if (!enabled) {
+                if (state) clearFile(container);
+                continue;
+            }
+            if (state) continue;
+            const path = filePath(container);
+            // An unresolved path is left unmarked so the next pass retries once
+            // GitHub finishes rendering the header, and counted so that markup
+            // this script cannot read shows up in the pill instead of looking
+            // like a diff with no test files in it.
+            if (!path) {
+                unidentified++;
+                continue;
+            }
+            container.__ghtfPath = path;
+            const ruleName = matchRule(path);
+            if (!ruleName) {
+                container.setAttribute(STATE_ATTR, 'source');
+                continue;
+            }
+            hideFile(container, path, ruleName);
+        }
+        applyTree(containers);
+        renderVisibleTotals(containers);
+        renderPill(containers.length, unidentified);
+        setTimeout(() => { suppressObserver = false; }, 0);
+    }
+
+    /** Re-sync the tree, the header summary and the pill after a manual reveal. */
+    function refreshChrome() {
+        const containers = fileContainers();
+        applyTree(containers);
+        renderVisibleTotals(containers);
+        renderPill(containers.length, 0);
+    }
+
+    function reset() {
+        suppressObserver = true;
+        for (const container of fileContainers()) clearFile(container);
+        clearTree();
+        const badge = document.querySelector('.' + VISIBLE_STAT_CLASS);
+        if (badge) badge.remove();
+        setTimeout(() => { suppressObserver = false; }, 0);
+    }
+
+    // ------------------------------------------------------------- lifecycle
+
+    let scheduled;
+
+    /**
+     * Debounced apply that defers rather than drops. A mutation arriving while
+     * this script is writing must still be honoured on a later pass — GitHub
+     * appends diff files progressively, and a dropped notification leaves those
+     * files unprocessed until some unrelated mutation happens to arrive.
+     */
+    function schedule() {
+        clearTimeout(scheduled);
+        scheduled = setTimeout(() => {
+            if (suppressObserver) schedule();
+            else apply();
+        }, DEBOUNCE_MS);
+    }
+
+    function install() {
+        apply();
+        new MutationObserver(schedule).observe(document.body, { childList: true, subtree: true });
+        for (const event of ['turbo:load', 'turbo:render', 'pjax:end', 'popstate']) {
+            window.addEventListener(event, schedule);
+        }
+    }
+
+    const api = {
+        apply,
+        reset,
+        get enabled() {
+            return enabled;
+        },
+        set enabled(value) {
+            enabled = Boolean(value);
+            localStorage.setItem(ENABLED_KEY, String(enabled));
+            reset();
+            apply();
+        },
+        get rules() {
+            return rules.map(([name, re]) => ({ name, pattern: String(re) }));
+        },
+        /** Persist an extra path pattern (string or RegExp) for repos with odd test layouts. */
+        addRule(pattern) {
+            const source = pattern instanceof RegExp ? pattern.source : String(pattern);
+            const stored = JSON.parse(localStorage.getItem(CUSTOM_RULES_KEY) || '[]');
+            if (!stored.includes(source)) stored.push(source);
+            localStorage.setItem(CUSTOM_RULES_KEY, JSON.stringify(stored));
+            rules = BUILT_IN_RULES.concat(loadCustomRules());
+            reset();
+            apply();
+            return api.rules;
+        },
+        clearCustomRules() {
+            localStorage.removeItem(CUSTOM_RULES_KEY);
+            rules = BUILT_IN_RULES.slice();
+            reset();
+            apply();
+            return api.rules;
+        },
+        /** Reveal every file whose path contains `needle`, without disabling the filter. */
+        show(needle) {
+            let shown = 0;
+            for (const container of fileContainers()) {
+                if (container.getAttribute(STATE_ATTR) !== 'hidden') continue;
+                if (needle && !filePath(container).includes(needle)) continue;
+                revealFile(container);
+                shown++;
+            }
+            refreshChrome();
+            return shown;
+        },
+        debug() {
+            const rows = fileContainers().map(container => {
+                const path = filePath(container);
+                return {
+                    path,
+                    rule: path ? matchRule(path) : '(no path yet)',
+                    state: container.getAttribute(STATE_ATTR) || '(unprocessed)',
+                    stat: formatStat(fileCounts(container))
+                };
+            });
+            console.table(rows);
+            if (rows.length === 0) {
+                console.warn('[test-file-filter] no diff file containers matched. Selector in use: ' + FILE_SELECTOR);
+            } else if (rows.every(row => row.path === '')) {
+                console.warn('[test-file-filter] file containers found but no paths extracted. Attrs tried: ' + PATH_ATTRS.join(', '));
+            }
+            return rows;
+        },
+        selectors: { FILE_SELECTOR, PATH_ATTRS }
+    };
+    window.__ghTestFileFilter = api;
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', install);
+    } else {
+        install();
+    }
+})();

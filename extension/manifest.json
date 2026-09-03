@@ -1,0 +1,29 @@
+{
+    "manifest_version": 3,
+    "name": "GitHub diff filters",
+    "version": "1.1.0",
+    "description": "Hides test files and comment-only diff lines on GitHub pull request diffs, automatically.",
+    "minimum_chrome_version": "111",
+    "content_scripts": [
+        {
+            "matches": [
+                "https://github.com/*"
+            ],
+            "js": [
+                "filters/hide-comment-diffs.js",
+                "filters/hide-test-files.js",
+                "bootstrap.js",
+                "pill-skin.js"
+            ],
+            "run_at": "document_idle",
+            "world": "MAIN",
+            "all_frames": false
+        }
+    ],
+    "icons": {
+        "16": "icons/icon-16.png",
+        "32": "icons/icon-32.png",
+        "48": "icons/icon-48.png",
+        "128": "icons/icon-128.png"
+    }
+}
