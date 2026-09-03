@@ -12,6 +12,12 @@ screen:
 - **Hide comment diffs** — hides diff lines whose only change is a comment or
   whitespace.
 
+Beyond tests, it hides the rest of what swamps a large diff — lockfiles,
+snapshots, generated and vendored code, seeded data — each category switchable
+on its own, per repository. A file carrying **review feedback is never
+collapsed**, and `onlyChanged` mode collapses whatever is identical to your
+previous visit, which is what a re-review after a fix round actually needs.
+
 ![Both filters running on a pull request](docs/pills.png)
 
 Each filter puts a pill in the bottom-right corner stating what it hid and what
@@ -35,6 +41,16 @@ to publish it.
 Managed Chrome profiles often block unpacked extensions. `install.html` offers
 the same two filters as bookmarklets — drag either button to the bookmarks bar
 and click it on a diff.
+
+## Keyboard
+
+| Key | Action |
+| --- | --- |
+| `t` | Hide or show test files |
+| `c` | Hide or show comment-only lines |
+| `j` / `k` | Next and previous file still on screen |
+
+Modifiers, text fields and anything that is not a diff screen are left alone.
 
 ## How it decides what is a test file
 
@@ -72,6 +88,14 @@ __ghTestFileFilter.addRule('/legacy-checks/')
 | `clearCustomRules()` | Drop the persisted extras |
 | `show(needle)` | Reveal every hidden file whose path contains `needle` |
 | `apply()` / `reset()` | Re-run or undo the pass |
+| `defaultEnabled` | The setting for repositories with no preference of their own |
+| `repo` / `clearRepoPreference()` | The current scope, and handing it back to the default |
+| `onlyChanged` | Collapse files identical to your previous visit to this PR |
+| `categories` / `setCategory(name, on)` | Which kinds of noise hide: test, snapshot, lockfile, generated, vendored, data |
+| `report()` | Dump what the path and count probes actually saw, for a markup change |
+
+Preferences resolve per repository with a global fallback, so switching tests
+back on for one repo leaves the rest alone.
 
 If a pill reads `⚠ N unread`, it matched N file containers but could not read
 their paths — GitHub's markup moved, and `debug()` says which files.

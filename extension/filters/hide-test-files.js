@@ -20,6 +20,7 @@
     const ENABLED_KEY = 'gh-hide-test-files:enabled';
     const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';
     const ONLY_CHANGED_KEY = 'gh-hide-test-files:onlyChanged';
+    const CATEGORIES_KEY = 'gh-hide-test-files:categories';
     const SEEN_KEY = 'gh-hide-test-files:seen';
     const SEEN_INDEX_KEY = 'gh-hide-test-files:seenIndex';
     const SEEN_LIMIT = 20;
@@ -65,18 +66,24 @@
      * so a path rule can hide a file without waiting for it to load.
      */
     const BUILT_IN_RULES = [
-        ['test dir', /(^|\/)(tests?|specs?|__tests__|__mocks__|__snapshots__|__fixtures__|testdata|test_data|e2e|cypress|playwright)\//i],
-        ['js/ts spec', /[.\-_](spec|test|cy)\.[cm]?[jt]sx?$/i],
-        ['py test', /(^|\/)(test_[^/]+|[^/]+_test|conftest)\.py$/i],
-        ['go test', /_test\.go$/i],
-        ['rb spec', /_(spec|test)\.rb$/i],
-        ['jvm test', /(Test|Tests|TestCase|Spec|Specs|IT)\.(java|kt|kts|scala|groovy)$/],
-        ['dotnet test', /(Test|Tests|Spec|Specs)\.(cs|fs|vb)$/],
-        ['php test', /Test\.php$/],
-        ['snapshot', /\.snap$/i],
-        ['cucumber', /\.feature$/i],
-        ['test config', /(^|\/)(jest|vitest|karma|jasmine|playwright|cypress|codecept|protractor|wdio|nyc)\.[^/]*(conf|config|setup)\.[cm]?[jt]s$/i]
+        ['test dir', /(^|\/)(tests?|specs?|__tests__|__mocks__|testdata|test_data|e2e|cypress|playwright)\//i, 'test'],
+        ['js/ts spec', /[.\-_](spec|test|cy)\.[cm]?[jt]sx?$/i, 'test'],
+        ['py test', /(^|\/)(test_[^/]+|[^/]+_test|conftest)\.py$/i, 'test'],
+        ['go test', /_test\.go$/i, 'test'],
+        ['rb spec', /_(spec|test)\.rb$/i, 'test'],
+        ['jvm test', /(Test|Tests|TestCase|Spec|Specs|IT)\.(java|kt|kts|scala|groovy)$/, 'test'],
+        ['dotnet test', /(Test|Tests|Spec|Specs)\.(cs|fs|vb)$/, 'test'],
+        ['php test', /Test\.php$/, 'test'],
+        ['cucumber', /\.feature$/i, 'test'],
+        ['test config', /(^|\/)(jest|vitest|karma|jasmine|playwright|cypress|codecept|protractor|wdio|nyc)\.[^/]*(conf|config|setup)\.[cm]?[jt]s$/i, 'test'],
+        ['snapshot', /(\.snap$|(^|\/)__snapshots__\/)/i, 'snapshot'],
+        ['lockfile', /(^|\/)(package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb?|Cargo\.lock|Gemfile\.lock|poetry\.lock|composer\.lock|Pipfile\.lock|go\.sum)$/i, 'lockfile'],
+        ['generated', /(\.(pb|g|generated)\.[a-z]+$|_pb2?\.(py|js|ts|go)$|(^|\/)generated\/|\.min\.(js|css)$|\.designer\.cs$)/i, 'generated'],
+        ['vendored', /(^|\/)(vendor|vendored|third_party|thirdparty|node_modules|Pods)\//i, 'vendored'],
+        ['seeded data', /(^|\/)(seeds?|goldens?|baselines?|captured|fixtures|__fixtures__)\//i, 'data']
     ];
+
+    const CATEGORIES = ['test', 'snapshot', 'lockfile', 'generated', 'vendored', 'data'];
 
     /**
      * Set by the extension's bootstrap before it runs this filter; a bookmarklet
@@ -124,6 +131,26 @@
      * read once and held for the whole visit. Comparing against a snapshot that
      * was rewritten mid-visit would report everything as unchanged.
      */
+    function categoriesKey() {
+        const scope = repoScope();
+        return scope ? `${CATEGORIES_KEY}:${scope}` : CATEGORIES_KEY;
+    }
+
+    /** Every category hides by default; a repository can switch any of them off. */
+    function readCategories() {
+        let stored = {};
+        try {
+            stored = JSON.parse(localStorage.getItem(categoriesKey()) || '{}');
+        } catch (error) {
+            stored = {};
+        }
+        const resolved = {};
+        for (const name of CATEGORIES) resolved[name] = stored[name] !== false;
+        return resolved;
+    }
+
+    let categories = readCategories();
+
     let visitBaseline;
     let baselineFor;
     let lastWritten;
@@ -198,10 +225,13 @@
 
     let rules = BUILT_IN_RULES.concat(loadCustomRules());
 
-    /** @returns {string|null} the name of the rule that claims this path. */
+    /** @returns {{name: string, category: string}|null} the rule that claims this path. */
     function matchRule(path) {
-        for (const [name, re] of rules) {
-            if (re.test(path)) return name;
+        for (const [name, re, category] of rules) {
+            if (!re.test(path)) continue;
+            const group = category || 'custom';
+            if (group !== 'custom' && !categories[group]) continue;
+            return { name, category: group };
         }
         return null;
     }
@@ -453,7 +483,7 @@
      * One pill shape shared with the comment filter's, so the two read as one
      * control: state on the left, the action it performs in a chip on the right.
      */
-    function renderPill(containerCount, unidentified, commented, unchanged) {
+    function renderPill(containerCount, unidentified, commented, unchanged, hiddenNonTest) {
         if (!pill) {
             pill = document.createElement('div');
             pill.id = PILL_ID;
@@ -486,13 +516,15 @@
         const hidden = document.querySelectorAll(`[${STATE_ATTR}="hidden"]`).length;
         const tests = document.querySelectorAll(`[${STATE_ATTR}="hidden"],[${STATE_ATTR}="shown"]`).length;
         const plural = n => (n === 1 ? '' : 's');
+        // "test file" would be a lie once a lockfile or a vendored path is hiding too.
+        const noun = hiddenNonTest > 0 ? 'file' : 'test file';
         let state;
         let action;
         if (!enabled) {
             state = tests > 0 ? `${tests} test file${plural(tests)} shown` : 'Test files shown';
             action = 'Hide';
         } else if (hidden > 0) {
-            state = `${hidden} test file${plural(hidden)} hidden`;
+            state = `${hidden} ${noun}${plural(hidden)} hidden`;
             action = 'Show';
         } else if (tests > 0) {
             state = `${tests} test file${plural(tests)} shown`;
@@ -827,12 +859,14 @@
             activeScope = repoScope();
             enabled = readEnabled();
             onlyChanged = readOnlyChanged();
+            categories = readCategories();
             statHost = null;
         }
         const containers = fileContainers();
         let unidentified = 0;
         let commented = 0;
         let unchanged = 0;
+        let hiddenNonTest = 0;
         const baseline = readBaseline();
         const snapshot = {};
         for (const container of containers) {
@@ -869,9 +903,9 @@
                 continue;
             }
             container.__ghtfPath = path;
-            const ruleName = matchRule(path);
+            const rule = matchRule(path);
             snapshot[path] = fingerprint(container);
-            if (!ruleName) {
+            if (!rule) {
                 if (onlyChanged && baseline[path] === snapshot[path]) {
                     if (hasReviewComments(container)) {
                         container.setAttribute(STATE_ATTR, 'commented');
@@ -890,12 +924,18 @@
                 commented++;
                 continue;
             }
-            hideFile(container, path, ruleName, 'hidden');
+            container.__ghtfCategory = rule.category;
+            if (rule.category !== 'test') hiddenNonTest++;
+            hideFile(container, path, rule.name, 'hidden');
         }
         if (Object.keys(snapshot).length > 0) rememberSnapshot(Object.assign({}, baseline, snapshot));
         applyTree(containers);
         renderVisibleTotals(containers);
-        renderPill(containers.length, unidentified, commented, unchanged);
+        if (hiddenNonTest === 0) {
+            hiddenNonTest = containers.filter(c => c.getAttribute(STATE_ATTR) === 'hidden'
+                && c.__ghtfCategory && c.__ghtfCategory !== 'test').length;
+        }
+        renderPill(containers.length, unidentified, commented, unchanged, hiddenNonTest);
         setTimeout(() => { suppressObserver = false; }, 0);
     }
 
@@ -973,6 +1013,20 @@
         get onlyChanged() {
             return onlyChanged;
         },
+        get categories() {
+            return Object.assign({}, categories);
+        },
+        /** Switch one category of noise off for this repository. */
+        setCategory(name, value) {
+            if (!CATEGORIES.includes(name)) throw new Error(`unknown category: ${name}`);
+            const stored = readCategories();
+            stored[name] = Boolean(value);
+            localStorage.setItem(categoriesKey(), JSON.stringify(stored));
+            categories = readCategories();
+            reset();
+            apply();
+            return api.categories;
+        },
         set onlyChanged(value) {
             onlyChanged = Boolean(value);
             localStorage.setItem(onlyChangedKey(), String(onlyChanged));
@@ -1023,9 +1077,11 @@
         debug() {
             const rows = fileContainers().map(container => {
                 const path = filePath(container);
+                const rule = path ? matchRule(path) : null;
                 return {
                     path,
-                    rule: path ? matchRule(path) : '(no path yet)',
+                    rule: rule ? rule.name : (path ? null : '(no path yet)'),
+                    category: rule ? rule.category : null,
                     state: container.getAttribute(STATE_ATTR) || '(unprocessed)',
                     stat: formatStat(fileCounts(container))
                 };
