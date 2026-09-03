@@ -24,6 +24,10 @@ echo "=== collapsed-file counts (source) ==="
 node "$HERE/test/collapsed.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ COLLAPSED)'
 
 echo
+echo "=== totals host without an id (source) ==="
+node "$HERE/test/totals-host.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ TOTALS)'
+
+echo
 echo "=== extension content scripts (built bundle) ==="
 node "$HERE/test/extension.test.js" | grep -E '^(  FAIL|ALL|[0-9]+ EXTENSION)'
 
@@ -40,4 +44,7 @@ if [[ -f "$HERE/hide-test-files.min.js" ]]; then
     echo
     echo "=== collapsed-file counts (minified build) ==="
     node "$HERE/test/collapsed.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ COLLAPSED)'
+    echo
+    echo "=== totals host without an id (minified build) ==="
+    node "$HERE/test/totals-host.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ TOTALS)'
 fi

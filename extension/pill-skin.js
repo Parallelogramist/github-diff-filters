@@ -42,8 +42,8 @@
         const chip = document.createElement('span');
         chip.className = ACTION_CLASS;
         chip.textContent = action;
-        chip.style.cssText = 'padding:3px 9px;border-radius:999px;font-weight:600;'
-            + 'background:var(--bgColor-neutral-muted,#282e36);color:var(--fgColor-default,#e6edf3);';
+        chip.style.cssText = 'padding:3px 9px;font-weight:600;'
+            + 'color:var(--fgColor-default,#e6edf3);';
         pill.append(chip);
     }
 

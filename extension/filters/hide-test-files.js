@@ -40,6 +40,9 @@
     const TREE_ITEM_SELECTOR = '[role="treeitem"]';
     const TREE_GROUP_SELECTOR = '[role="group"],[role="treeitem"]';
     const VISIBLE_STAT_CLASS = 'ghtf-visible-stat';
+    const ADDED_TOTAL = /^\+[\d,]+$/;
+    const DELETED_TOTAL = /^[-\u2212\u2013][\d,]+$/;
+    const COMBINED_TOTAL = /^\+[\d,]+\s*[-\u2212\u2013][\d,]+$/;
     const ANCHOR_ID = /(diff-[0-9a-f]{16,})$/i;
     const CONTROL_LEAF = /^(viewed|expand|collapse|copy|comment|comments|hidden|load|diff|show|hide|unchanged|binary|\u2026|\u22ef)$/i;
 
@@ -74,6 +77,7 @@
     /** Set while this script mutates the DOM, so the observer ignores its own writes. */
     let suppressObserver = false;
     let pill;
+    let statHost;
 
     // ---------------------------------------------------------------- rules
 
@@ -404,8 +408,8 @@
         const chip = document.createElement('span');
         chip.className = 'ghdf-pill-action';
         chip.textContent = action;
-        chip.style.cssText = 'padding:3px 9px;border-radius:999px;font-weight:600;'
-            + 'background:var(--bgColor-neutral-muted,#282e36);color:var(--fgColor-default,#e6edf3);';
+        chip.style.cssText = 'padding:3px 9px;font-weight:600;'
+            + 'color:var(--fgColor-default,#e6edf3);';
         host.append(chip);
     }
 
@@ -539,15 +543,34 @@
 
     // ------------------------------------------- visible change-count summary
 
+    /**
+     * Where the PR's own +/- totals are rendered. The classic view gives them an
+     * id; the newer review view does not, so they are found by shape instead:
+     * a leaf reading "+N" with a "-M" leaf beside it, or both in one leaf.
+     *
+     * Document order decides, because the PR total is rendered above the file
+     * list while a per-file header carries the same shape.
+     */
     function diffstatHost() {
-        const byId = document.getElementById('diffstat');
-        if (byId) return byId;
-        const scope = document.querySelector('main') || document.body;
-        for (const el of scope.querySelectorAll('span,div')) {
-            if (!/^\+[\d,]+$/.test((el.textContent || '').trim())) continue;
-            if (el.closest(FILE_SELECTOR)) continue;
+        if (statHost && statHost.isConnected) return statHost;
+        statHost = document.getElementById('diffstat');
+        if (statHost) return statHost;
+        for (const el of document.querySelectorAll('span,div,strong,em,p,h1,h2,h3')) {
+            if (el.children.length > 0 || el.closest(FILE_SELECTOR)) continue;
+            const text = (el.textContent || '').trim();
+            if (COMBINED_TOTAL.test(text)) {
+                statHost = el.parentElement || el;
+                return statHost;
+            }
+            if (!ADDED_TOTAL.test(text)) continue;
             const parent = el.parentElement;
-            if (parent && /[-\u2212\u2013][\d,]+/.test(parent.textContent || '')) return parent;
+            if (!parent) continue;
+            for (const sibling of parent.children) {
+                if (sibling !== el && DELETED_TOTAL.test((sibling.textContent || '').trim())) {
+                    statHost = parent;
+                    return statHost;
+                }
+            }
         }
         return null;
     }
@@ -781,7 +804,11 @@
                     stat: formatStat(fileCounts(container))
                 };
             });
+            const host = diffstatHost();
             console.table(rows);
+            console.log('[test-file-filter] totals host:',
+                host ? (host.id || host.className || host.tagName) : 'NOT FOUND',
+                host ? `"${(host.textContent || '').trim().slice(0, 60)}"` : '');
             if (rows.length === 0) {
                 console.warn('[test-file-filter] no diff file containers matched. Selector in use: ' + FILE_SELECTOR);
             } else if (rows.every(row => row.path === '')) {
