@@ -44,6 +44,11 @@
     const DELETED_TOTAL = /^[-\u2212\u2013][\d,]+$/;
     const COMBINED_TOTAL = /^\+[\d,]+\s*[-\u2212\u2013][\d,]+$/;
     const DIFF_BODY_SELECTOR = 'tr,[role="row"],[class*="iffLine"],[class*="diff-line"],.blob-code,.blob-num,table';
+    const REVIEW_COMMENT_SELECTOR = [
+        '.review-comment', '.js-comment-container', '.js-inline-comments-container .js-comment',
+        '[class*="ReviewThread"]', '[class*="reviewThread"]',
+        '[data-testid*="comment-thread"]', '[data-testid*="review-thread"]'
+    ].join(',');
     const ANCHOR_ID = /(diff-[0-9a-f]{16,})$/i;
     const CONTROL_LEAF = /^(viewed|expand|collapse|copy|comment|comments|hidden|load|diff|show|hide|unchanged|binary|\u2026|\u22ef)$/i;
 
@@ -114,6 +119,11 @@
     /** Renames render as "old → new"; the new path is the one to classify. */
     function normalizePath(raw) {
         return (raw || '').split('→').pop().trim();
+    }
+
+    /** Whether a file carries review feedback, which must never be collapsed away. */
+    function hasReviewComments(container) {
+        return !!container.querySelector(REVIEW_COMMENT_SELECTOR);
     }
 
     /** A path carries no whitespace and has either a directory separator or an extension. */
@@ -346,7 +356,7 @@
      * One pill shape shared with the comment filter's, so the two read as one
      * control: state on the left, the action it performs in a chip on the right.
      */
-    function renderPill(containerCount, unidentified) {
+    function renderPill(containerCount, unidentified, commented) {
         if (!pill) {
             pill = document.createElement('div');
             pill.id = PILL_ID;
@@ -390,7 +400,7 @@
             action = '';
         }
         pill.style.opacity = enabled ? '1' : '0.85';
-        setPillContent(pill, '🧪', state, action, unidentified);
+        setPillContent(pill, '🧪', state, action, unidentified, commented);
 
         if (unidentified > 0) {
             pill.title = `${unidentified} file${plural(unidentified)} whose path this script could not read`
@@ -403,7 +413,7 @@
     }
 
     /** Shared with pill-skin.js, which gives the comment filter's pill the same shape. */
-    function setPillContent(host, emoji, state, action, unidentified) {
+    function setPillContent(host, emoji, state, action, unidentified, commented) {
         host.replaceChildren();
         const label = document.createElement('span');
         label.className = 'ghdf-pill-label';
@@ -415,6 +425,12 @@
             warn.textContent = `⚠ ${unidentified} unread`;
             warn.style.color = 'var(--fgColor-attention,#d29922)';
             host.append(warn);
+        }
+        if (commented > 0) {
+            const kept = document.createElement('span');
+            kept.textContent = `· ${commented} with comments`;
+            kept.title = 'Left open because a review thread would otherwise be collapsed out of sight';
+            host.append(kept);
         }
         if (!action) return;
         const chip = document.createElement('span');
@@ -698,10 +714,23 @@
         suppressObserver = true;
         const containers = fileContainers();
         let unidentified = 0;
+        let commented = 0;
         for (const container of containers) {
             const state = container.getAttribute(STATE_ATTR);
             if (!enabled) {
                 if (state) clearFile(container);
+                continue;
+            }
+            // Feedback outranks tidiness: a collapsed stub is easy to scroll
+            // past, and a review thread on a test file still has to be read.
+            if (state === 'hidden' && hasReviewComments(container)) {
+                revealFile(container);
+                container.setAttribute(STATE_ATTR, 'commented');
+                commented++;
+                continue;
+            }
+            if (state === 'commented') {
+                commented++;
                 continue;
             }
             if (state) continue;
@@ -720,11 +749,16 @@
                 container.setAttribute(STATE_ATTR, 'source');
                 continue;
             }
+            if (hasReviewComments(container)) {
+                container.setAttribute(STATE_ATTR, 'commented');
+                commented++;
+                continue;
+            }
             hideFile(container, path, ruleName);
         }
         applyTree(containers);
         renderVisibleTotals(containers);
-        renderPill(containers.length, unidentified);
+        renderPill(containers.length, unidentified, commented);
         setTimeout(() => { suppressObserver = false; }, 0);
     }
 
@@ -733,7 +767,7 @@
         const containers = fileContainers();
         applyTree(containers);
         renderVisibleTotals(containers);
-        renderPill(containers.length, 0);
+        renderPill(containers.length, 0, containers.filter(c => c.getAttribute(STATE_ATTR) === 'commented').length);
     }
 
     function reset() {

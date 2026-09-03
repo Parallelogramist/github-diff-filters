@@ -32,6 +32,10 @@ echo "=== per-file counts in the review view (source) ==="
 node "$HERE/test/changes-counts.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ CHANGES)'
 
 echo
+echo "=== comment guard (source) ==="
+node "$HERE/test/comments.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ COMMENT)'
+
+echo
 echo "=== extension content scripts (built bundle) ==="
 node "$HERE/test/extension.test.js" | grep -E '^(  FAIL|ALL|[0-9]+ EXTENSION)'
 
@@ -54,4 +58,7 @@ if [[ -f "$HERE/hide-test-files.min.js" ]]; then
     echo
     echo "=== per-file counts in the review view (minified build) ==="
     node "$HERE/test/changes-counts.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ CHANGES)'
+    echo
+    echo "=== comment guard (minified build) ==="
+    node "$HERE/test/comments.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ COMMENT)'
 fi
