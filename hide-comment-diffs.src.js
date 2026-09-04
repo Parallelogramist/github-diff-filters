@@ -218,10 +218,15 @@
         return el;
     }
 
-    function setTally(container, count) {
+    /**
+     * The per-file tally. Its `data-added` / `data-deleted` are read by the
+     * test-file filter, which takes them off the header figure so that figure
+     * is what is left to read once both filters are done.
+     */
+    function setTally(container, hidden) {
         const header = container.querySelector(HEADER_SELECTOR) || container.firstElementChild;
         let tally = container.querySelector('.' + TALLY_CLASS);
-        if (count === 0) {
+        if (hidden.rows === 0) {
             if (tally) tally.remove();
             return;
         }
@@ -231,10 +236,21 @@
             tally.style.cssText = 'margin-left:8px;color:var(--fgColor-muted,#8b949e);';
             (header || container).appendChild(tally);
         }
-        // Read by the test-file filter, which subtracts these from the header
-        // figure so it accounts for everything both filters removed.
-        const text = `${count} comment hidden`;
+        const text = `${hidden.rows} comment hidden`;
         if (tally.textContent !== text) tally.textContent = text;
+        setAttr(tally, 'data-added', String(hidden.added));
+        setAttr(tally, 'data-deleted', String(hidden.deleted));
+    }
+
+    function setAttr(el, name, value) {
+        if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+    }
+
+    /** Which side of the diff a changed cell is on. */
+    function sideOf(el) {
+        if (el.matches(ADDITION_SELECTOR)) return 'added';
+        if (el.matches(DELETION_SELECTOR)) return 'deleted';
+        return (el.textContent || '').trim().startsWith('+') ? 'added' : 'deleted';
     }
 
     /**
@@ -254,12 +270,14 @@
         if (signature === lastSignature) return lastSummary;
         styleElement();
         let hiddenLines = 0;
+        let hiddenAdded = 0;
+        let hiddenDeleted = 0;
         let touchedFiles = 0;
         for (const container of containers) {
             const path = filePath(container);
             const syntax = syntaxFor(path);
             const state = { inBlock: false };
-            let hiddenHere = 0;
+            const here = { rows: 0, added: 0, deleted: 0 };
             for (const [row, cells] of changedRows(container)) {
                 if (carriesFeedback(row)) continue;
                 if (followsHunk(row)) state.inBlock = false;
@@ -270,13 +288,17 @@
                     if (!isNoise(codeOf(cell), syntax, state)) noise = false;
                 }
                 row.classList.toggle(HIDDEN_CLASS, noise);
-                if (noise) hiddenHere++;
+                if (!noise) continue;
+                here.rows++;
+                for (const cell of cells) here[sideOf(cell)]++;
             }
-            setTally(container, hiddenHere);
-            hiddenLines += hiddenHere;
-            if (hiddenHere > 0) touchedFiles++;
+            setTally(container, here);
+            hiddenLines += here.rows;
+            hiddenAdded += here.added;
+            hiddenDeleted += here.deleted;
+            if (here.rows > 0) touchedFiles++;
         }
-        renderPill(hiddenLines, touchedFiles);
+        renderPill(hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted);
         lastSignature = quickSignature(containers);
         return lastSummary;
     }
@@ -330,7 +352,7 @@
      * like any other mutation, and a pass that rewrites its own pill schedules
      * the next pass, for as long as the page is open.
      */
-    function renderPill(hiddenLines, touchedFiles) {
+    function renderPill(hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted) {
         const containers = fileContainers().length;
         if (!pill) {
             pill = document.createElement('div');
@@ -360,14 +382,17 @@
             const bottom = neighbour ? `${neighbour.offsetHeight + 24}px` : '16px';
             if (pill.style.bottom !== bottom) pill.style.bottom = bottom;
         }
-        const summary = { hiddenLines, touchedFiles, files: containers, enabled, paused, hiding: hiding() };
+        const summary = {
+            hiddenLines, hiddenAdded, hiddenDeleted, touchedFiles, files: containers,
+            enabled, paused, hiding: hiding()
+        };
         const key = JSON.stringify(summary);
         if (key === pillKey) return;
         pillKey = key;
         lastSummary = summary;
         if (containers === 0) {
             pill.style.display = 'none';
-            document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: summary }));
+            document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: Object.assign({ source: 'comments' }, summary) }));
             return;
         }
         pill.style.display = 'flex';
@@ -406,7 +431,7 @@
             chip.style.cssText = 'padding:3px 9px;font-weight:600;color:var(--fgColor-default,#e6edf3);';
             pill.append(chip);
         }
-        document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: summary }));
+        document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: Object.assign({ source: 'comments' }, summary) }));
     }
 
     // ------------------------------------------------------------ lifecycle

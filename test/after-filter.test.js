@@ -16,13 +16,16 @@ const ok = (cond, label) => { console.log((cond ? '  PASS  ' : '  FAIL  ') + lab
 const anchor = p => 'diff-' + crypto.createHash('sha256').update(p).digest('hex');
 
 // Sign and number in separate leaves, plus the stated pair, exactly as GitHub
-// renders it; `commentsHidden` mimics the other filter's per-file label.
-const file = (p, added, deleted, commentsHidden) => `<div class="Diff-module__diffTargetable--z9" id="${anchor(p)}">
+// renders it; `comments` mimics the other filter's per-file tally, which states
+// its hidden lines by side.
+const tally = c => c ? `<span class="ghccf-tally" data-added="${c.added}" data-deleted="${c.deleted}">`
+    + `${c.added + c.deleted} comment hidden</span>` : '';
+const file = (p, added, deleted, comments) => `<div class="Diff-module__diffTargetable--z9" id="${anchor(p)}">
   <div class="Diff-module__diffHeaderWrapper__x">
     <button>Collapse file</button><span>${p}</span>
     <span>+</span><span>${added}</span><span>-</span><span>${deleted}</span>
     <span class="sr-only">Lines changed: ${added} additions &amp; ${deleted} deletions</span>
-    <span>Viewed</span>${commentsHidden ? `<span>${commentsHidden} comment hidden</span>` : ''}
+    <span>Viewed</span>${tally(comments)}
   </div>
   <div class="DiffLine-module__line--q">+ code()</div>
 </div>`;
@@ -32,13 +35,14 @@ const treeRow = p => `<li role="treeitem" data-tree-entry-type="file" id="file-t
 const FILES = [
     { p: 'test/api/spec/one.js', add: 130, del: 0, comments: 0 },
     { p: 'client/app/x.component.spec.ts', add: 20, del: 5, comments: 0 },
-    { p: 'server/lib/rates.js', add: 300, del: 40, comments: 22 },
-    { p: 'server/lib/pricing.js', add: 50, del: 5, comments: 8 }
+    { p: 'server/lib/rates.js', add: 300, del: 40, comments: { added: 20, deleted: 2 } },
+    { p: 'server/lib/pricing.js', add: 50, del: 5, comments: { added: 5, deleted: 3 } }
 ];
 // Totals as GitHub would state them for the whole pull request.
 const TOTAL_ADD = FILES.reduce((n, f) => n + f.add, 0);
 const TOTAL_DEL = FILES.reduce((n, f) => n + f.del, 0);
-// Hidden: the two test files (+150 −5). Visible: +350 −45, less 30 comment lines.
+// Hidden: the two test files (+150 −5). Visible: +350 −45, less 30 comment-only
+// lines (+25 −5) inside the visible files: +325 −40 left to read.
 const html = `<!doctype html><html><body>
   <nav><a href="/acme/repo/pull/3/files">Files changed <span>${FILES.length}</span></a></nav>
   <div id="toolbar"><span>+${TOTAL_ADD}</span><span>&minus;${TOTAL_DEL}</span></div>
@@ -65,12 +69,13 @@ const html = `<!doctype html><html><body>
     const badge = doc.querySelector('.ghtf-visible-stat');
     ok(!!badge, 'the badge rendered');
     ok(/after filter/.test(badge.textContent), `labelled "after filter" (got: ${badge.textContent})`);
-    ok(/\+350/.test(badge.textContent), `additions exclude the hidden files (got: ${badge.textContent})`);
-    ok(/−45/.test(badge.textContent), `deletions exclude the hidden files (got: ${badge.textContent})`);
-    ok(/−30 comment/.test(badge.textContent),
-        `the 30 comment-only lines are reported (got: ${badge.textContent})`);
-    ok(/2 hidden files \(\+150 −5\)/.test(badge.title) && /30 comment-only lines/.test(badge.title),
-        `the tooltip accounts for both (got: ${badge.title})`);
+    ok(/\+325/.test(badge.textContent),
+        `additions exclude the hidden files and the added comment lines (got: ${badge.textContent})`);
+    ok(/−40/.test(badge.textContent),
+        `deletions exclude the hidden files and the deleted comment lines (got: ${badge.textContent})`);
+    ok(!/comment/.test(badge.textContent), 'no separate comment count: the figure is what is left to read');
+    ok(/2 hidden files \(\+150 −5\)/.test(badge.title) && /30 comment-only lines \(\+25 −5\)/.test(badge.title),
+        `the tooltip carries the breakdown (got: ${badge.title})`);
 
     console.log('\n=== it reads as part of GitHub’s own diffstat ===');
     const numbers = [...badge.querySelectorAll('span')].filter(el => /[+−]\d/.test(el.textContent));
@@ -81,8 +86,22 @@ const html = `<!doctype html><html><body>
     ok(badge.parentElement.id === 'toolbar', 'it lives inside GitHub’s own totals element');
 
     console.log('\n=== comment lines inside a hidden file are not double counted ===');
-    // server/lib/rates.js is visible, so its 22 count; a hidden file's would not.
-    ok(!/−52 comment/.test(badge.textContent), 'only visible files contribute comment lines');
+    // A tally inside a hidden file describes lines already gone with the file.
+    const hiddenHeader = doc.querySelector(`#${anchor('client/app/x.component.spec.ts')} .Diff-module__diffHeaderWrapper__x`);
+    hiddenHeader.insertAdjacentHTML('beforeend', tally({ added: 9, deleted: 1 }));
+    dom.window.__ghTestFileFilter.reset();
+    dom.window.__ghTestFileFilter.apply();
+    const again = doc.querySelector('.ghtf-visible-stat');
+    ok(/\+325/.test(again.textContent) && /−40/.test(again.textContent),
+        `only visible files contribute comment lines (got: ${again.textContent})`);
+
+    console.log('\n=== an older tally with no sides comes off the changed-lines figure ===');
+    for (const el of doc.querySelectorAll('.ghccf-tally')) { el.removeAttribute('data-added'); el.removeAttribute('data-deleted'); }
+    dom.window.__ghTestFileFilter.reset();
+    dom.window.__ghTestFileFilter.apply();
+    const unsigned = doc.querySelector('.ghtf-visible-stat');
+    ok(/365 lines/.test(unsigned.textContent) && !/comment/.test(unsigned.textContent),
+        `+350 −45 less 30 unsigned lines reads as 365 lines (got: ${unsigned.textContent})`);
 
     console.log('\n' + (failures === 0 ? 'ALL AFTER-FILTER ASSERTIONS PASS' : failures + ' AFTER-FILTER FAILURES'));
     process.exit(failures ? 1 : 0);

@@ -69,6 +69,8 @@
     // number into separate text nodes.
     const LINES_CHANGED = /(\d[\d,]*)\s+additions?\s*(?:&|and|&amp;)\s*(\d[\d,]*)\s+deletions?/i;
     const COMMENTS_HIDDEN = /(\d[\d,]*)\s+comments?\s+hidden/i;
+    /** The comment filter's per-file tally, which carries its hidden lines by side. */
+    const COMMENT_TALLY_SELECTOR = '.ghccf-tally';
     const TREE_STATE_ATTR = 'data-ghtf-tree';
     const TREE_ITEM_SELECTOR = '[role="treeitem"]';
     const TREE_GROUP_SELECTOR = '[role="group"],[role="treeitem"]';
@@ -683,13 +685,37 @@
         return null;
     }
 
-    /** Comment-only lines the sibling filter collapsed inside this file. */
+    /**
+     * Comment-only lines the sibling filter collapsed inside this file, by
+     * side where its tally says which; an older tally states only a total,
+     * which can come off the changed-lines figure but not off either side.
+     */
     function commentLinesHidden(container) {
+        const tally = container.querySelector(COMMENT_TALLY_SELECTOR);
+        if (tally && tally.hasAttribute('data-added') && tally.hasAttribute('data-deleted')) {
+            const added = parseCount(tally.getAttribute('data-added'));
+            const deleted = parseCount(tally.getAttribute('data-deleted'));
+            return { lines: parseCount(tally.textContent) || added + deleted, added, deleted, signed: true };
+        }
         for (const text of headerLeaves(container, 40)) {
             const hit = text.match(COMMENTS_HIDDEN);
-            if (hit) return parseCount(hit[1]);
+            if (hit) return { lines: parseCount(hit[1]), added: 0, deleted: 0, signed: false };
         }
-        return 0;
+        return { lines: 0, added: 0, deleted: 0, signed: true };
+    }
+
+    /** Comment-only lines hidden inside the files still on screen. */
+    function commentLinesInView(containers) {
+        const sum = { lines: 0, added: 0, deleted: 0, signed: true };
+        for (const container of containers) {
+            if (HIDDEN_STATES.test(container.getAttribute(STATE_ATTR))) continue;
+            const here = commentLinesHidden(container);
+            sum.lines += here.lines;
+            sum.added += here.added;
+            sum.deleted += here.deleted;
+            if (here.lines > 0 && !here.signed) sum.signed = false;
+        }
+        return sum;
     }
 
     function formatStat(counts) {
@@ -1005,7 +1031,7 @@
                 pill.style.borderColor = 'var(--borderColor-default,#30363d)';
             }
         }
-        document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: summary }));
+        document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: Object.assign({ source: 'files' }, summary) }));
     }
 
     let popoverOpen = false;
@@ -1173,7 +1199,7 @@
         if (popoverOpen === open) return;
         popoverOpen = open;
         renderPopover(fileContainers());
-        document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: lastSummary }));
+        document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: Object.assign({ source: 'files' }, lastSummary) }));
     }
 
     // ------------------------------------------------------------- file tree
@@ -1458,14 +1484,21 @@
         };
     }
 
+    /**
+     * The header figure: GitHub's totals less everything either filter took
+     * out of view — whole files, and the comment-only lines inside the files
+     * still on screen — so it reads as what is left.
+     */
     function renderVisibleTotals(containers) {
-        const hiddenFiles = containers.filter(c => HIDDEN_STATES.test(c.getAttribute(STATE_ATTR)));
+        const hiddenFiles = hiding() ? containers.filter(c => HIDDEN_STATES.test(c.getAttribute(STATE_ATTR))) : [];
+        const comments = commentLinesInView(containers);
+        const excluded = hiddenFiles.length > 0 || comments.lines > 0;
         const host = diffstatHost();
         if (!host) {
             // The toolbar holding the totals can render after the diff. Nothing
             // else may mutate afterwards, so waiting on the observer alone loses
             // the figure until the next toggle.
-            if (hiddenFiles.length > 0 && totalsAttempts < TOTALS_ATTEMPT_LIMIT) {
+            if (excluded && totalsAttempts < TOTALS_ATTEMPT_LIMIT) {
                 totalsAttempts++;
                 setTimeout(refreshChrome, 400);
             }
@@ -1473,7 +1506,7 @@
         }
         totalsAttempts = 0;
         const existing = host.querySelector('.' + VISIBLE_STAT_CLASS);
-        if (!hiding() || hiddenFiles.length === 0) {
+        if (!excluded) {
             if (existing) existing.remove();
             return null;
         }
@@ -1491,20 +1524,24 @@
         }
 
         // Subtracting from the PR's own totals keeps the figure footing to the
-        // one beside it. Where the hidden files' +/- split is not trustworthy,
+        // one beside it. Where either exclusion's +/- split is not trustworthy,
         // report changed lines rather than invent a split.
         const totals = hostTotals(host);
+        const signed = hiddenSigned && comments.signed;
         let visible;
-        if (totals && hiddenSigned) {
+        if (totals && signed) {
             visible = {
-                added: Math.max(0, totals.added - hiddenAdded),
-                deleted: Math.max(0, totals.deleted - hiddenDeleted),
+                added: Math.max(0, totals.added - hiddenAdded - comments.added),
+                deleted: Math.max(0, totals.deleted - hiddenDeleted - comments.deleted),
                 signed: true
             };
         } else if (totals) {
-            visible = { changed: Math.max(0, totals.added + totals.deleted - hiddenChanged), signed: false };
+            visible = {
+                changed: Math.max(0, totals.added + totals.deleted - hiddenChanged - comments.lines),
+                signed: false
+            };
         } else {
-            visible = { added: 0, deleted: 0, changed: 0, signed: true };
+            visible = { added: 0, deleted: 0, changed: 0, signed };
             for (const container of containers) {
                 if (HIDDEN_STATES.test(container.getAttribute(STATE_ATTR))) continue;
                 const counts = fileCounts(container);
@@ -1513,15 +1550,9 @@
                 visible.changed += counts.changed;
                 if (!counts.signed) visible.signed = false;
             }
-        }
-
-        // Comment-only lines the sibling filter collapsed inside files that are
-        // still on screen. They carry no sign, so they reduce the total rather
-        // than either side of the split.
-        let commentLines = 0;
-        for (const container of containers) {
-            if (HIDDEN_STATES.test(container.getAttribute(STATE_ATTR))) continue;
-            commentLines += commentLinesHidden(container);
+            visible.added = Math.max(0, visible.added - comments.added);
+            visible.deleted = Math.max(0, visible.deleted - comments.deleted);
+            visible.changed = Math.max(0, visible.changed - comments.lines);
         }
 
         const style = hostFigureStyle(host);
@@ -1534,7 +1565,7 @@
         }
         badge.replaceChildren();
         badge.title = describeExclusions(hiddenFiles.length, hiddenSigned, hiddenAdded, hiddenDeleted,
-            hiddenChanged, commentLines);
+            hiddenChanged, comments);
         const dot = figure('\u00b7', 'muted', style);
         dot.setAttribute('aria-hidden', 'true');
         badge.append(dot, figure('after filter', 'muted', style));
@@ -1543,9 +1574,6 @@
                 figure(`${style.minus}${visible.deleted.toLocaleString()}`, 'danger', style));
         } else {
             badge.append(figure(`${visible.changed.toLocaleString()} lines`, 'default', style));
-        }
-        if (commentLines > 0) {
-            badge.append(figure(`${style.minus}${commentLines.toLocaleString()} comment`, 'muted', style));
         }
         return visible;
     }
@@ -1570,15 +1598,16 @@
         return el;
     }
 
-    function describeExclusions(files, signed, added, deleted, changed, commentLines) {
+    function describeExclusions(files, signed, added, deleted, changed, comments) {
+        const split = (plus, minus) => `+${plus.toLocaleString()} \u2212${minus.toLocaleString()}`;
         const parts = [];
         if (files > 0) {
             parts.push(`${files} hidden file${files === 1 ? '' : 's'}`
-                + ` (${signed ? `+${added.toLocaleString()} \u2212${deleted.toLocaleString()}`
-                    : `${changed.toLocaleString()} changed lines`})`);
+                + ` (${signed ? split(added, deleted) : `${changed.toLocaleString()} changed lines`})`);
         }
-        if (commentLines > 0) {
-            parts.push(`${commentLines.toLocaleString()} comment-only line${commentLines === 1 ? '' : 's'}`);
+        if (comments.lines > 0) {
+            parts.push(`${comments.lines.toLocaleString()} comment-only line${comments.lines === 1 ? '' : 's'}`
+                + (comments.signed ? ` (${split(comments.added, comments.deleted)})` : ''));
         }
         return parts.length === 0 ? '' : 'Excluding ' + parts.join(' and ');
     }
@@ -1859,6 +1888,11 @@
         // stays local, which is the behaviour it had before.
         document.addEventListener(SYNC_DATA, event => {
             acceptSynced(event.detail && event.detail.settings);
+        });
+        // The header figure takes the comment filter's lines off GitHub's
+        // totals, and that filter's own writes are invisible to the observer.
+        document.addEventListener(STATE_EVENT, event => {
+            if (event.detail && event.detail.source === 'comments') refreshChrome();
         });
         document.dispatchEvent(new CustomEvent(SYNC_PULL));
         document.addEventListener('click', event => {

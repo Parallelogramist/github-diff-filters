@@ -121,6 +121,9 @@ const isHidden = (doc, p, index) => codeCell(doc, p, index).classList.contains('
     const tally = doc.querySelector('[data-path="src/app.js"] .ghccf-tally');
     ok(!!tally && /6 comment hidden/.test(tally.textContent),
         `the per-file tally names the count (got: ${tally && tally.textContent})`);
+    ok(tally.getAttribute('data-added') === '5' && tally.getAttribute('data-deleted') === '1',
+        `and states the hidden lines by side for the header figure (got +${tally.getAttribute('data-added')} `
+        + `−${tally.getAttribute('data-deleted')})`);
     const pill = doc.getElementById('ghccf-pill');
     ok(/comment lines hidden in \d+ files?/.test(pill.textContent),
         `the pill reports lines and files (got: ${pill.textContent})`);
@@ -164,6 +167,11 @@ const isHidden = (doc, p, index) => codeCell(doc, p, index).classList.contains('
     const hiddenRows = doc.querySelectorAll('.ghccf-hidden').length;
     ok(api.summary().hiddenLines === hiddenRows && hiddenRows > 13 && api.summary().touchedFiles === 6,
         `summary() counts every file's hidden rows (got ${JSON.stringify(api.summary())}, ${hiddenRows} rows)`);
+    const reviewTallyEl = doc.querySelector(`#diff-${'e'.repeat(64)} .ghccf-tally`);
+    ok(reviewTallyEl.getAttribute('data-added') === '3' && reviewTallyEl.getAttribute('data-deleted') === '2',
+        `a split row counts one line per side (got +${reviewTallyEl.getAttribute('data-added')} −${reviewTallyEl.getAttribute('data-deleted')})`);
+    ok(api.summary().hiddenAdded + api.summary().hiddenDeleted >= hiddenRows,
+        'summary() carries the sides too');
 
     console.log('\n=== a settled pass writes nothing ===');
     await new Promise(r => setTimeout(r, 700));
