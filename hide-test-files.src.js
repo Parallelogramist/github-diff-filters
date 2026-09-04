@@ -19,7 +19,7 @@
      * there is no extension API to ask, so it carries the number and `build.sh`
      * checks it against the manifest.
      */
-    const VERSION = '1.20.0';
+    const VERSION = '1.20.1';
 
     const ENABLED_KEY = 'gh-hide-test-files:enabled';
     const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';
@@ -421,6 +421,13 @@
      * same file up to three times in one pass.
      */
     let commentedCache = new WeakMap();
+
+    /** The one way a file's verdict is written, and never to the value it holds. */
+    function setVerdict(container, verdict) {
+        if (container.getAttribute(STATE_ATTR) === verdict) return;
+        if (verdict === null) container.removeAttribute(STATE_ATTR);
+        else container.setAttribute(STATE_ATTR, verdict);
+    }
 
     /** Verdicts by `diff-<sha>`, which outlive the elements they were reached on. */
     const verdicts = new Map();
@@ -975,7 +982,7 @@
         // `diff-<sha>` id to key on; without one, the element itself is the only
         // handle this file has.
         if (!anchor) container.style.display = 'none';
-        container.setAttribute(STATE_ATTR, state);
+        setVerdict(container, state);
     }
 
     /**
@@ -1005,12 +1012,12 @@
         container.__ghtfStub = null;
         container.classList.remove(HIDDEN_CLASS);
         container.style.removeProperty('display');
-        container.setAttribute(STATE_ATTR, 'shown');
+        setVerdict(container, 'shown');
     }
 
     function clearFile(container) {
         unhide(container);
-        container.removeAttribute(STATE_ATTR);
+        setVerdict(container, null);
         container.__ghtfTrust = null;
     }
 
@@ -1065,7 +1072,7 @@
      * like any other mutation, and a pass that rewrites its own pill schedules
      * the next pass, for as long as the page is open.
      */
-    function renderPill(containers, incomplete, expected, arriving) {
+    function renderPill(containers, incomplete, expected, pageCaused) {
         if (!pill) {
             pill = document.createElement('div');
             pill.id = PILL_ID;
@@ -1144,18 +1151,31 @@
             // progress: never fewer than have arrived, so a stale or unreadable
             // count cannot read as having gone backwards.
             expected: Math.max(expected || 0, containers.length),
-            // Whether more of the diff is on its way, for anything drawing
-            // progress: true only for a pass the page itself caused.
-            arriving: !!arriving,
             commented: badges.commented, unchanged: badges.unchanged,
             enabled, paused, hiding: hiding(), incomplete: !!incomplete
         };
+        // Keyed before `arriving` joins it. That says what kind of pass this
+        // was rather than what the pill reads, and keying on it made a pass
+        // that had changed nothing redraw the pill for having noticed.
         const key = JSON.stringify([summary, state, action]);
-        if (key === pillKey) {
-            // Nothing to redraw, but a pass the page caused still means the
-            // diff is arriving, and whatever draws progress has no other way
-            // to know a burst is still going.
-            if (arriving) announce(summary);
+        const moved = key !== pillKey;
+        /**
+         * Whether more of the diff is on its way, for anything drawing
+         * progress: a pass the page caused that came to a different answer
+         * than the last one.
+         *
+         * Both halves are load-bearing. Scrolling a diff and hovering a line
+         * each rewrite the cell under them, and GitHub replaces whole
+         * containers for seconds after a load; a pass that reacts to any of
+         * those re-reaches the answer it already had. Saying the filters are
+         * working because the page moved is what made the bar run on a diff
+         * that had finished.
+         */
+        summary.arriving = pageCaused && moved;
+        if (!moved) {
+            // Nothing to redraw, but a burst still going has to say so —
+            // whatever draws progress has no other way to know.
+            if (summary.arriving) announce(summary);
             return;
         }
         pillKey = key;
@@ -1838,7 +1858,10 @@
         if (!force && !pendingPage && pendingFiles.size === 0) return;
         const pageChanged = force || pendingPage;
         const touched = pendingFiles;
-        const fromPage = sawMutations && !force;
+        // A pass the reader asked for does not mean the diff is arriving. The
+        // retry for a file whose header has not rendered does, so it says so
+        // rather than being told apart from the reader's by its force flag.
+        const pageCaused = !!(options && options.page) || (sawMutations && !force);
         pendingPage = false;
         pendingFiles = new Set();
         sawMutations = false;
@@ -1879,7 +1902,7 @@
             // past, and a review thread on a test file still has to be read.
             if (state === 'hidden' && hasReviewComments(container)) {
                 revealFile(container);
-                container.setAttribute(STATE_ATTR, 'commented');
+                setVerdict(container, 'commented');
                 continue;
             }
             // GitHub replaced the element this file was decided on; the
@@ -1888,7 +1911,7 @@
             if (!state) {
                 const anchor = anchorOf(container, true);
                 if (anchor && revealed.has(anchor)) {
-                    container.setAttribute(STATE_ATTR, 'shown');
+                    setVerdict(container, 'shown');
                     continue;
                 }
                 const known = anchor && verdicts.get(anchor);
@@ -1909,7 +1932,7 @@
                 if (hasReviewComments(container)) continue;
                 // The thread is gone. Reclassifying beats leaving a file open
                 // for feedback that is no longer on it.
-                container.removeAttribute(STATE_ATTR);
+                setVerdict(container, null);
                 state = '';
             }
             if (state === 'unchanged') {
@@ -1932,7 +1955,7 @@
             // markup this script cannot read shows up in the pill instead of
             // looking like a diff with no test files in it.
             if (!resolved.path) {
-                container.setAttribute(STATE_ATTR, 'pending');
+                setVerdict(container, 'pending');
                 unresolved++;
                 continue;
             }
@@ -1947,17 +1970,17 @@
             if (!rule) {
                 if (onlyChanged && mark && baseline[path] === mark) {
                     if (hasReviewComments(container)) {
-                        container.setAttribute(STATE_ATTR, 'commented');
+                        setVerdict(container, 'commented');
                         continue;
                     }
                     hideFile(container, path, 'unchanged since your last visit', 'unchanged');
                     continue;
                 }
-                container.setAttribute(STATE_ATTR, 'source');
+                setVerdict(container, 'source');
                 continue;
             }
             if (hasReviewComments(container)) {
-                container.setAttribute(STATE_ATTR, 'commented');
+                setVerdict(container, 'commented');
                 continue;
             }
             container.__ghtfCategory = rule.category;
@@ -1967,7 +1990,7 @@
         pruneStubs();
         applyTree(containers);
         renderVisibleTotals(containers);
-        renderPill(containers, incomplete, expected, fromPage || unresolved > 0);
+        renderPill(containers, incomplete, expected, pageCaused);
         renderPopover(containers);
         diagnose(containers);
         scheduleResolve(unresolved);
@@ -2009,7 +2032,7 @@
         }
         if (resolveAttempts >= RESOLVE_ATTEMPT_LIMIT) return;
         resolveAttempts++;
-        resolveTimer = setTimeout(() => apply({ force: true }), RESOLVE_RETRY_MS);
+        resolveTimer = setTimeout(() => apply({ force: true, page: true }), RESOLVE_RETRY_MS);
     }
 
     /**

@@ -18,7 +18,7 @@
      * there is no extension API to ask, so it carries the number and `build.sh`
      * checks it against the manifest.
      */
-    const VERSION = '1.20.0';
+    const VERSION = '1.20.1';
 
     const ENABLED_KEY = 'gh-hide-comment-diffs:enabled';
     const PAUSED_KEY = 'gh-hide-comment-diffs:paused';
@@ -358,7 +358,8 @@
         if (!force && !pendingPage && pendingFiles.size === 0) return lastSummary;
         const pageChanged = force || pendingPage;
         const touched = pendingFiles;
-        const fromPage = sawMutations && !force;
+        // A pass the reader asked for does not mean the diff is arriving.
+        const pageCaused = !!(options && options.page) || (sawMutations && !force);
         pendingPage = false;
         pendingFiles = new Set();
         sawMutations = false;
@@ -388,7 +389,7 @@
             hiddenDeleted += here.deleted;
             if (here.rows > 0) touchedFiles++;
         }
-        renderPill(containers.length, hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted, fromPage);
+        renderPill(containers.length, hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted, pageCaused);
         return lastSummary;
     }
 
@@ -453,7 +454,7 @@
      * like any other mutation, and a pass that rewrites its own pill schedules
      * the next pass, for as long as the page is open.
      */
-    function renderPill(files, hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted, arriving) {
+    function renderPill(files, hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted, pageCaused) {
         if (!pill) {
             pill = document.createElement('div');
             pill.id = PILL_ID;
@@ -484,13 +485,17 @@
         }
         const summary = {
             hiddenLines, hiddenAdded, hiddenDeleted, touchedFiles, files,
-            arriving: !!arriving, enabled, paused, hiding: hiding()
+            enabled, paused, hiding: hiding()
         };
+        // Keyed before `arriving` joins it; see the sibling filter for why.
         const key = JSON.stringify(summary);
-        if (key === pillKey) {
-            // See the sibling filter: a pass the page caused still says the
-            // diff is arriving, whether or not the pill's wording moved.
-            if (arriving) announce(summary);
+        const moved = key !== pillKey;
+        // A pass the page caused that came to a different answer; see the
+        // sibling filter for why both halves are needed.
+        summary.arriving = pageCaused && moved;
+        if (!moved) {
+            // Nothing to redraw, but a burst still going has to say so.
+            if (summary.arriving) announce(summary);
             return;
         }
         pillKey = key;

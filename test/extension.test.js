@@ -321,6 +321,8 @@ function loadContentScripts(window) {
     ok(loading.getAttribute('aria-valuenow') === '100',
         `it fills to the end when the diff is complete (got ${loading.getAttribute('aria-valuenow')})`);
 
+    const label0 = () => dock.querySelector('.ghdf-state');
+
     console.log('\n=== the reader is not the diff ===');
     // Everything the filters do announces itself the same way, so the bar has
     // to be told which announcements mean the page is still filling in.
@@ -333,25 +335,65 @@ function loadContentScripts(window) {
     await sleep(200);
     ok(!loading.classList.contains('ghdf-progress-on'), 'and so does closing it');
 
+    console.log('\n=== nor is the page moving under the reader ===');
+    // GitHub rewrites the cell a diff line lives in as the viewport crosses
+    // it, and again when the pointer enters it. Measured live: one scroll and
+    // one hover each produced three or four "arriving" announcements, so the
+    // bar ran and the label read as working on a diff that had finished. A
+    // pass that comes to every verdict it already held has applied nothing.
+    // A file of its own, decided and left to settle, so what follows is churn
+    // and nothing else.
+    const churnHost = doc.createElement('div');
+    churnHost.innerHTML = diffFile('src/churn.ts', 'c'.repeat(64));
+    doc.body.appendChild(churnHost);
+    await sleep(2600);
+    const settled = churnHost.querySelector('.js-file');
+    ok(settled.getAttribute('data-ghtf') === 'source' && !loading.classList.contains('ghdf-progress-on'),
+        `the file it churns in was decided and has gone quiet`
+        + ` (state ${settled.getAttribute('data-ghtf')}, bar "${loading.className}")`);
+    let announced = 0;
+    const countArriving = event => { if (event.detail && event.detail.arriving) announced++; };
+    doc.addEventListener('ghdf:state', countArriving);
+    const cell = settled.querySelector('td.blob-code');
+    // Chrome of GitHub's own, carrying no code: what a hover inserts.
+    cell.appendChild(doc.createElement('span'));
+    await sleep(700);
+    ok(announced === 0 && !loading.classList.contains('ghdf-progress-on'),
+        `churn inside a decided file starts nothing (${announced} announcements,`
+        + ` bar "${loading.className}")`);
+    ok(label0().textContent === 'Filters applied',
+        `and the label still reads as finished (got "${label0().textContent}")`);
+    doc.removeEventListener('ghdf:state', countArriving);
+
     console.log('\n=== the bar fills as the work goes on ===');
-    const host = doc.querySelector('.js-file,[class^="Diff-module__diffTargetable"]') || doc.body;
-    host.appendChild(doc.createElement('div'));
+    // A file arriving is the work. Anything less than that is the churn the
+    // section above covers, and it deliberately starts nothing.
+    let arrivals = 0;
+    const arrive = () => {
+        const host = doc.createElement('div');
+        host.innerHTML = diffFile(`src/late${arrivals}.ts`, String(arrivals).repeat(64).slice(0, 64));
+        arrivals++;
+        doc.body.appendChild(host);
+    };
+    arrive();
     await sleep(450);
     const early = parseFloat(loading.firstElementChild.style.width) || 0;
-    host.appendChild(doc.createElement('div'));
+    arrive();
     await sleep(550);
     const later = parseFloat(loading.firstElementChild.style.width) || 0;
     ok(loading.classList.contains('ghdf-progress-on'),
         `the page changing does start the bar (${loading.className})`);
     ok(later > early && later < 100, `and it fills without arriving early (${early}% then ${later}%)`);
+    ok(dom.window.__ghTestFileFilter.summary().files === arrivals + 1,
+        `and each of those really was a file (${dom.window.__ghTestFileFilter.summary().files} in the diff)`);
 
     console.log('\n=== the label says which of the two is happening ===');
-    const label = dock.querySelector('.ghdf-state');
+    const label = label0();
     ok(label.textContent === 'Applying filters\u2026' && !label.hidden,
         `it reads as working while the page is still changing (got "${label.textContent}")`);
     // Still working a beat later: the label has to stay put until the work
     // stops, not time out under a reader who is waiting on it.
-    host.appendChild(doc.createElement('div'));
+    arrive();
     await sleep(600);
     ok(label.textContent === 'Applying filters\u2026',
         `and it stays for as long as that lasts (got "${label.textContent}")`);
@@ -372,7 +414,7 @@ function loadContentScripts(window) {
     await sleep(150);
     ok(label.hidden, `and a later redraw does not bring it back (class "${label.className}")`);
     // New work does, though.
-    host.appendChild(doc.createElement('div'));
+    arrive();
     await sleep(450);
     ok(!label.hidden && label.textContent === 'Applying filters\u2026',
         `while more work brings it back (got "${label.textContent}", hidden=${label.hidden})`);
