@@ -22,7 +22,7 @@
      * there is no extension API to ask, so it carries the number and `build.sh`
      * checks it against the manifest.
      */
-    const VERSION = '1.16.0';
+    const VERSION = '1.17.0';
 
     const ENABLED_KEY = 'gh-hide-test-files:enabled';
     const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';
@@ -1015,7 +1015,7 @@
      * like any other mutation, and a pass that rewrites its own pill schedules
      * the next pass, for as long as the page is open.
      */
-    function renderPill(containers, incomplete) {
+    function renderPill(containers, incomplete, expected) {
         if (!pill) {
             pill = document.createElement('div');
             pill.id = PILL_ID;
@@ -1090,6 +1090,10 @@
         const plural = n => (n === 1 ? '' : 's');
         const summary = {
             hidden, matched, files: containers.length, unidentified,
+            // How many files the page says the diff has, for anything drawing
+            // progress: never fewer than have arrived, so a stale or unreadable
+            // count cannot read as having gone backwards.
+            expected: Math.max(expected || 0, containers.length),
             commented: badges.commented, unchanged: badges.unchanged,
             enabled, paused, hiding: hiding(), incomplete: !!incomplete
         };
@@ -1777,7 +1781,8 @@
         const containers = knownContainers;
         if (pageChanged) readTree();
         // A pass over part of the diff must keep looking rather than conclude.
-        let unresolved = Math.max(0, expectedFileCount() - containers.length);
+        const expected = expectedFileCount();
+        let unresolved = Math.max(0, expected - containers.length);
         const incomplete = unresolved > 0;
         const baseline = readBaseline();
         const snapshot = {};
@@ -1885,7 +1890,7 @@
         pruneStubs();
         applyTree(containers);
         renderVisibleTotals(containers);
-        renderPill(containers, incomplete);
+        renderPill(containers, incomplete, expected);
         renderPopover(containers);
         diagnose(containers);
         scheduleResolve(unresolved);

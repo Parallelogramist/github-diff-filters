@@ -30,13 +30,16 @@
 #${DOCK_ID}{position:fixed;right:16px;bottom:16px;z-index:2147483000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
 #${DOCK_ID} .ghdf-panel{display:none;flex-direction:column;align-items:flex-end;gap:6px;}
 #${DOCK_ID}:hover .ghdf-panel,#${DOCK_ID}:focus-within .ghdf-panel,#${DOCK_ID}.${PINNED_CLASS} .ghdf-panel{display:flex;}
-#${DOCK_ID} .ghdf-indicator{display:inline-flex;align-items:center;gap:8px;margin:0;padding:6px 10px 6px 12px;border-radius:999px;border:1px solid var(--borderColor-default,#30363d);background:var(--bgColor-default,#0d1117);color:var(--fgColor-default,#e6edf3);font:600 12px/1 var(--fontStack-monospace,ui-monospace,SFMono-Regular,monospace);box-shadow:0 6px 20px rgba(0,0,0,.4);user-select:none;}
+#${DOCK_ID} .ghdf-indicator{position:relative;display:inline-flex;align-items:center;gap:8px;margin:0;padding:6px 10px 6px 12px;border-radius:999px;border:1px solid var(--borderColor-default,#30363d);background:var(--bgColor-default,#0d1117);color:var(--fgColor-default,#e6edf3);font:600 12px/1 var(--fontStack-monospace,ui-monospace,SFMono-Regular,monospace);box-shadow:0 6px 20px rgba(0,0,0,.4);user-select:none;}
 #${DOCK_ID} .ghdf-indicator button{all:unset;display:inline-flex;align-items:center;font:inherit;color:inherit;line-height:1;cursor:pointer;}
 #${DOCK_ID} .ghdf-indicator button:focus-visible{outline:2px solid var(--focus-outlineColor,#1f6feb);outline-offset:3px;border-radius:2px;}
 #${DOCK_ID} .ghdf-settings{padding:3px;margin:-3px;border-radius:50%;color:var(--fgColor-muted,#8b949e);}
 #${DOCK_ID} .ghdf-settings svg{display:block;}
 #${DOCK_ID} .ghdf-settings:hover,#${DOCK_ID} .ghdf-settings[aria-expanded="true"]{color:var(--fgColor-default,#e6edf3);}
 #${DOCK_ID} .ghdf-indicator.ghdf-active .ghdf-settings{color:var(--fgColor-success,#3fb950);}
+#${DOCK_ID} .ghdf-progress{position:absolute;left:12px;right:10px;bottom:3px;height:2px;border-radius:999px;background:var(--borderColor-muted,#30363d);overflow:hidden;opacity:0;transition:opacity .3s ease;pointer-events:none;}
+#${DOCK_ID} .ghdf-progress.ghdf-progress-on{opacity:1;}
+#${DOCK_ID} .ghdf-progress span{display:block;height:100%;width:0;border-radius:999px;background:var(--fgColor-accent,#388bfd);transition:width .18s ease;}
 `;
 
     const DEFAULT_KEYS = { tests: 't', comments: 'c', next: 'j', previous: 'k' };
@@ -109,6 +112,9 @@
     let indicator;
     let shorthand;
     let settings;
+    let progress;
+    let progressFill;
+    let doneTimer;
     let indicatorKey = '';
 
     function ensureStyle() {
@@ -167,7 +173,15 @@
                 const filter = window.__ghTestFileFilter;
                 if (filter && typeof filter.toggleSettings === 'function') filter.toggleSettings();
             });
-            indicator.append(shorthand, settings);
+            progress = document.createElement('div');
+            progress.className = 'ghdf-progress';
+            progress.setAttribute('role', 'progressbar');
+            progress.setAttribute('aria-label', 'Filtering the diff');
+            progress.setAttribute('aria-valuemin', '0');
+            progress.setAttribute('aria-valuemax', '100');
+            progressFill = document.createElement('span');
+            progress.append(progressFill);
+            indicator.append(shorthand, settings, progress);
             dock.append(panel, indicator);
             document.body.appendChild(dock);
         }
@@ -197,7 +211,10 @@
         const active = Boolean((tests && tests.hiding) || (comments && comments.hiding));
         const filter = window.__ghTestFileFilter;
         const settingsOpen = Boolean(filter && filter.settingsOpen);
-        const key = `${files}:${lines}:${active}:${settingsOpen}:${!!filter}`;
+        const arrived = tests ? tests.files : 0;
+        const expected = tests ? Math.max(tests.expected || 0, arrived) : 0;
+        const loading = Boolean(tests && tests.incomplete && expected > 0);
+        const key = `${files}:${lines}:${active}:${settingsOpen}:${!!filter}:${arrived}/${expected}:${loading}`;
         if (key === indicatorKey) return;
         indicatorKey = key;
         shorthand.textContent = `${files}:${lines}`;
@@ -208,6 +225,31 @@
         // The categories belong to the test-file filter; without it there is nothing to open.
         settings.hidden = !filter;
         settings.setAttribute('aria-expanded', String(settingsOpen));
+        renderProgress(loading, arrived, expected);
+    }
+
+    /**
+     * A bar while the diff is still arriving. GitHub renders a large one in
+     * bursts over several seconds, and a count that has stopped moving looks
+     * exactly like a count that is finished — this says which. It fills to the
+     * end before going away, so finishing is something the reader sees rather
+     * than something they infer from the bar's absence.
+     */
+    function renderProgress(loading, arrived, expected) {
+        if (!progress) return;
+        clearTimeout(doneTimer);
+        const percent = expected > 0 ? Math.min(100, Math.round((arrived / expected) * 100)) : 0;
+        if (loading) {
+            progress.classList.add('ghdf-progress-on');
+            progress.setAttribute('aria-valuenow', String(percent));
+            // A sliver of bar reads as "started"; nothing reads as broken.
+            progressFill.style.width = `${Math.max(4, percent)}%`;
+            return;
+        }
+        if (!progress.classList.contains('ghdf-progress-on')) return;
+        progress.setAttribute('aria-valuenow', '100');
+        progressFill.style.width = '100%';
+        doneTimer = setTimeout(() => progress.classList.remove('ghdf-progress-on'), 900);
     }
 
     function onDiffScreen() {

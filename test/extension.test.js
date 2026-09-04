@@ -157,8 +157,16 @@ function loadContentScripts(window) {
     const settings = dock.querySelector('.ghdf-settings');
     ok(!!indicator && shorthand.tagName === 'BUTTON' && settings && settings.tagName === 'BUTTON',
         'the shorthand and the funnel are buttons, so both can take focus');
-    ok(indicator.children.length === 2 && indicator.firstElementChild === shorthand
-        && indicator.lastElementChild === settings, 'shorthand on the left, funnel on the right, nothing else');
+    // The controls are exactly these two, in this order. The progress bar sits
+    // in the same box but takes no space and no focus, so it is counted apart.
+    const controls = [...indicator.children].filter(el => el.tagName === 'BUTTON');
+    ok(controls.length === 2 && controls[0] === shorthand && controls[1] === settings,
+        'shorthand on the left, funnel on the right, no other control');
+    const bar = indicator.querySelector('.ghdf-progress');
+    ok(!!bar && bar.getAttribute('role') === 'progressbar'
+        && !bar.classList.contains('ghdf-progress-on'),
+        `a progress bar is present and quiet on a diff that has fully arrived`
+        + ` (${bar ? bar.className : 'missing'})`);
     ok(shorthand && shorthand.textContent === `${tests.hidden}:${comments.hiddenLines}`,
         `shorthand reads files:lines (got "${shorthand && shorthand.textContent}", `
         + `expected "${tests.hidden}:${comments.hiddenLines}")`);
@@ -258,6 +266,30 @@ function loadContentScripts(window) {
     for (const file of ['bridge.js', 'options.html', 'options.js', 'options.css']) {
         ok(fs.existsSync(path.join(__dirname, '..', 'extension', file)), `extension/${file} ships`);
     }
+
+    // GitHub renders a large diff in bursts, and a count that has stopped
+    // moving looks exactly like a count that is finished. Have the page claim
+    // more files than have arrived, which is that state.
+    console.log('\n=== while the diff is still arriving ===');
+    const nav = doc.createElement('a');
+    nav.href = '/acme/repo/pull/1/files';
+    nav.innerHTML = 'Files changed <span>99</span>';
+    doc.body.appendChild(nav);
+    const loading = dock.querySelector('.ghdf-progress');
+    dom.window.__ghTestFileFilter.apply();
+    await sleep(60);
+    ok(loading.classList.contains('ghdf-progress-on'),
+        `the bar shows while files are still on their way (${loading.className})`);
+    const filled = parseFloat(loading.firstElementChild.style.width);
+    ok(filled > 0 && filled < 100, `and stops short of the end (${loading.firstElementChild.style.width})`);
+    const state = dom.window.__ghTestFileFilter.summary();
+    ok(state.expected > state.files,
+        `the summary says how many the page is still expecting (${state.files} of ${state.expected})`);
+    nav.remove();
+    dom.window.__ghTestFileFilter.apply();
+    await sleep(60);
+    ok(loading.getAttribute('aria-valuenow') === '100',
+        `it fills to the end when the diff is complete (got ${loading.getAttribute('aria-valuenow')})`);
 
     console.log('\n' + (failures === 0 ? 'ALL EXTENSION ASSERTIONS PASS' : failures + ' EXTENSION FAILURES'));
     process.exit(failures ? 1 : 0);
