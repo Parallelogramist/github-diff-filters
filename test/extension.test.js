@@ -106,7 +106,7 @@ function loadContentScripts(window) {
     // only went back to working when GitHub's next burst landed, which is the
     // words in the wrong order.
     const opening = doc.querySelector('#ghdf-dock .ghdf-state');
-    ok(opening && opening.textContent === 'Applying filters\u2026' && !opening.hidden,
+    ok(opening && opening.textContent === 'Working\u2026' && !opening.hidden,
         `a diff still loading reads as working, not as finished (got "`
         + `${opening && opening.textContent}")`);
 
@@ -408,19 +408,40 @@ function loadContentScripts(window) {
 
     console.log('\n=== the label says which of the two is happening ===');
     const label = label0();
-    ok(label.textContent === 'Applying filters\u2026' && !label.hidden,
+    ok(label.textContent === 'Working\u2026' && !label.hidden,
         `it reads as working while the page is still changing (got "${label.textContent}")`);
     // Still working a beat later: the label has to stay put until the work
     // stops, not time out under a reader who is waiting on it.
     arrive();
     await sleep(600);
-    ok(label.textContent === 'Applying filters\u2026',
+    ok(label.textContent === 'Working\u2026',
         `and it stays for as long as that lasts (got "${label.textContent}")`);
     await sleep(1600);
     ok(label.textContent === 'Done' && !label.hidden
         && !label.classList.contains('ghdf-state-gone'),
         `then says so once the work stops (got "${label.textContent}", `
         + `class "${label.className}")`);
+
+    // GitHub moves the page far more often than it moves the answer: measured
+    // on a 129-file review, 45 page-caused passes against 17 that concluded
+    // anything. Timing the settle from the answer alone let it expire mid-load,
+    // so the label flapped between working and finished and the bar began
+    // again each time. Churn at less than the settle apart has to hold it.
+    console.log('\n=== the page still moving holds the label steady ===');
+    arrive();
+    await sleep(300);
+    const heldFrom = label.textContent;
+    const churnIn = doc.querySelector('#files .js-file') || doc.querySelector('.js-file');
+    for (let i = 0; i < 5; i++) {
+        churnIn.querySelector('td.blob-code').appendChild(doc.createElement('span'));
+        await sleep(400);
+    }
+    ok(heldFrom === 'Working\u2026' && label.textContent === 'Working\u2026',
+        `two seconds of churn keeps it working, not flapping (from "${heldFrom}"`
+        + ` to "${label.textContent}")`);
+    await sleep(1600);
+    ok(label.textContent === 'Done',
+        `and it still finishes once the churn stops (got "${label.textContent}")`);
     // Five seconds of standing, then the fade. Worth the wait in the suite:
     // this is the whole of what the reader was promised would happen.
     await sleep(5000 + 450 + 300);
@@ -435,7 +456,7 @@ function loadContentScripts(window) {
     // New work does, though.
     arrive();
     await sleep(450);
-    ok(!label.hidden && label.textContent === 'Applying filters\u2026',
+    ok(!label.hidden && label.textContent === 'Working\u2026',
         `while more work brings it back (got "${label.textContent}", hidden=${label.hidden})`);
 
     // How a real page load goes, which the run above cannot reproduce: it
@@ -453,7 +474,7 @@ function loadContentScripts(window) {
     await sleep(500);
     const coldLabel = cold.window.document.querySelector('#ghdf-dock .ghdf-state');
     ok(!!coldLabel, 'the control is there');
-    ok(coldLabel && coldLabel.textContent === 'Applying filters\u2026' && !coldLabel.hidden,
+    ok(coldLabel && coldLabel.textContent === 'Working\u2026' && !coldLabel.hidden,
         `and reads as working, though it missed the announcement (got "`
         + `${coldLabel && coldLabel.textContent}")`);
     await sleep(1600);

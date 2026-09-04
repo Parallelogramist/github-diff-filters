@@ -22,7 +22,7 @@
      * there is no extension API to ask, so it carries the number and `build.sh`
      * checks it against the manifest.
      */
-    const VERSION = '1.21.0';
+    const VERSION = '1.21.1';
 
     const ENABLED_KEY = 'gh-hide-test-files:enabled';
     const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';
@@ -1183,10 +1183,14 @@
          * that had finished.
          */
         summary.arriving = pageCaused && moved;
+        // Whether the page caused this pass at all, whatever it concluded.
+        summary.pageCaused = pageCaused;
         if (!moved) {
-            // Nothing to redraw, but a burst still going has to say so —
-            // whatever draws progress has no other way to know.
-            if (summary.arriving) announce(summary);
+            // Nothing to redraw, but a pass the page caused still says so.
+            // GitHub moves the page far more often than it moves the answer,
+            // and whatever draws progress needs the frequent signal to tell a
+            // burst still running from one that has finished.
+            if (pageCaused) announce(summary);
             return;
         }
         pillKey = key;

@@ -26,7 +26,7 @@
     const STYLE_ID = 'ghdf-dock-style';
     const PINNED_CLASS = 'ghdf-pinned';
     const FUNNEL = '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>';
-    const WORKING_TEXT = 'Applying filters\u2026';
+    const WORKING_TEXT = 'Working\u2026';
     const DONE_TEXT = 'Done';
     /** How long the finished label stays before it goes; a label that never leaves stops being read. */
     const APPLIED_MS = 5000;
@@ -478,10 +478,18 @@
     // A filter announces each change to its pill, including a pill it had to
     // put back after a navigation replaced body.
     document.addEventListener(STATE_EVENT, event => {
-        // Only the page filling the diff in counts as work. Switching a
+        const detail = event.detail || {};
+        // Only the page filling the diff in starts the work. Switching a
         // category, or opening this menu, announces itself the same way and
         // used to make the bar start over on every click.
-        if (event.detail && event.detail.arriving) noteActivity();
+        if (detail.arriving) noteActivity();
+        // A pass the page caused that concluded nothing is no reason to start,
+        // but while the filters are already working it is proof they still
+        // are. GitHub moves the page far more often than it moves the answer,
+        // so a settle timed from the answer alone expired mid-load: the label
+        // flapped between working and finished and the bar began again each
+        // time.
+        else if (busy && detail.pageCaused) noteActivity();
         ensureDock();
     });
     ensureDock();

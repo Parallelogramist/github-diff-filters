@@ -15,7 +15,7 @@
      * there is no extension API to ask, so it carries the number and `build.sh`
      * checks it against the manifest.
      */
-    const VERSION = '1.21.0';
+    const VERSION = '1.21.1';
 
     const ENABLED_KEY = 'gh-hide-comment-diffs:enabled';
     const PAUSED_KEY = 'gh-hide-comment-diffs:paused';
@@ -499,9 +499,12 @@
         // A pass the page caused that came to a different answer; see the
         // sibling filter for why both halves are needed.
         summary.arriving = pageCaused && moved;
+        // Whether the page caused this pass at all, whatever it concluded.
+        summary.pageCaused = pageCaused;
         if (!moved) {
-            // Nothing to redraw, but a burst still going has to say so.
-            if (summary.arriving) announce(summary);
+            // Nothing to redraw, but a pass the page caused still says so;
+            // see the sibling filter for why.
+            if (pageCaused) announce(summary);
             return;
         }
         pillKey = key;
