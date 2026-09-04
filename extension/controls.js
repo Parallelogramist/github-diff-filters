@@ -40,6 +40,9 @@
 #${DOCK_ID} .ghdf-progress{position:absolute;left:12px;right:10px;bottom:3px;height:2px;border-radius:999px;background:var(--borderColor-muted,#30363d);overflow:hidden;opacity:0;transition:opacity .3s ease;pointer-events:none;}
 #${DOCK_ID} .ghdf-progress.ghdf-progress-on{opacity:1;}
 #${DOCK_ID} .ghdf-progress span{display:block;height:100%;width:0;border-radius:999px;background:var(--fgColor-accent,#388bfd);transition:width .18s ease;}
+#${DOCK_ID} .ghdf-progress.ghdf-progress-sweep span{width:35%;transition:none;animation:ghdf-sweep 1.1s ease-in-out infinite;}
+@keyframes ghdf-sweep{0%{transform:translateX(-110%);}100%{transform:translateX(300%);}}
+@media (prefers-reduced-motion:reduce){#${DOCK_ID} .ghdf-progress.ghdf-progress-sweep span{animation:none;width:100%;opacity:.5;}}
 `;
 
     const DEFAULT_KEYS = { tests: 't', comments: 'c', next: 'j', previous: 'k' };
@@ -115,6 +118,10 @@
     let progress;
     let progressFill;
     let doneTimer;
+    let activityTimer;
+    let busy = false;
+    /** How long after the last pass the filters are taken to be finished. */
+    const SETTLE_MS = 700;
     let indicatorKey = '';
 
     function ensureStyle() {
@@ -203,6 +210,24 @@
     }
 
     /** `files:lines` — what the test-file filter hid and what the comment filter hid. */
+    /**
+     * Note that the filters are working. They announce every pass, and GitHub
+     * renders a large diff in bursts, so passes keep arriving for as long as
+     * the diff does — a quiet spell is the end of it. This is the only signal
+     * available on the review view, which lists every file's container up front
+     * and fills the bodies in afterwards: by the time the slow part starts,
+     * every file has "arrived" and a percentage has nothing left to count.
+     */
+    function noteActivity() {
+        busy = true;
+        clearTimeout(activityTimer);
+        activityTimer = setTimeout(() => {
+            busy = false;
+            indicatorKey = '';
+            renderIndicator();
+        }, SETTLE_MS);
+    }
+
     function renderIndicator() {
         const tests = summaryOf('__ghTestFileFilter');
         const comments = summaryOf('__ghCommentFilter');
@@ -213,7 +238,7 @@
         const settingsOpen = Boolean(filter && filter.settingsOpen);
         const arrived = tests ? tests.files : 0;
         const expected = tests ? Math.max(tests.expected || 0, arrived) : 0;
-        const loading = Boolean(tests && tests.incomplete && expected > 0);
+        const loading = busy || Boolean(tests && tests.incomplete && expected > 0);
         const key = `${files}:${lines}:${active}:${settingsOpen}:${!!filter}:${arrived}/${expected}:${loading}`;
         if (key === indicatorKey) return;
         indicatorKey = key;
@@ -238,15 +263,25 @@
     function renderProgress(loading, arrived, expected) {
         if (!progress) return;
         clearTimeout(doneTimer);
-        const percent = expected > 0 ? Math.min(100, Math.round((arrived / expected) * 100)) : 0;
+        // Count against a total only where the page gives one that is still
+        // ahead of what has arrived; otherwise say "working" and mean it.
+        const counted = expected > arrived;
         if (loading) {
+            const percent = counted ? Math.min(100, Math.round((arrived / expected) * 100)) : 0;
             progress.classList.add('ghdf-progress-on');
-            progress.setAttribute('aria-valuenow', String(percent));
-            // A sliver of bar reads as "started"; nothing reads as broken.
-            progressFill.style.width = `${Math.max(4, percent)}%`;
+            progress.classList.toggle('ghdf-progress-sweep', !counted);
+            if (counted) {
+                progress.setAttribute('aria-valuenow', String(percent));
+                // A sliver reads as "started"; nothing reads as broken.
+                progressFill.style.width = `${Math.max(4, percent)}%`;
+            } else {
+                progress.removeAttribute('aria-valuenow');
+                progressFill.style.width = '';
+            }
             return;
         }
         if (!progress.classList.contains('ghdf-progress-on')) return;
+        progress.classList.remove('ghdf-progress-sweep');
         progress.setAttribute('aria-valuenow', '100');
         progressFill.style.width = '100%';
         doneTimer = setTimeout(() => progress.classList.remove('ghdf-progress-on'), 900);
@@ -305,7 +340,10 @@
     document.addEventListener('keydown', onKeyDown, true);
     // A filter announces each change to its pill, including a pill it had to
     // put back after a navigation replaced body.
-    document.addEventListener(STATE_EVENT, ensureDock);
+    document.addEventListener(STATE_EVENT, () => {
+        noteActivity();
+        ensureDock();
+    });
     ensureDock();
     publishHelp();
 
