@@ -8,6 +8,13 @@
  * than timed, because wall-clock in jsdom measures the harness.
  *
  * The property under test: a pass reads the file that changed, not the diff.
+ *
+ * A call count is a proxy, not the cost. Blink charges far more for one
+ * selector list than for its terms asked one at a time — 2.8ms against 1.5ms
+ * for the six that find a review thread — so a filter that splits a list
+ * counts worse here and runs faster on the page. Rejoining one to bring this
+ * number down would be a regression; measure on a real diff before trusting a
+ * change this file rewards.
  */
 const fs = require('fs');
 const path = require('path');

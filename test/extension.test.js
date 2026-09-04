@@ -149,19 +149,19 @@ function loadContentScripts(window) {
         && help.some(entry => entry.key === 'j' && /next visible file/.test(entry.label)),
         'the shortcuts are published for the popover to list');
 
-    console.log('\n-- collapsed, the dock is a shorthand and an icon; it expands on hover or focus --');
+    console.log('\n-- collapsed, the dock says what it is doing; it expands on hover or focus --');
     const indicator = dock.querySelector('.ghdf-indicator');
-    const shorthand = dock.querySelector('.ghdf-shorthand');
+    const stateLabel = dock.querySelector('.ghdf-state');
     const tests = dom.window.__ghTestFileFilter.summary();
     const comments = dom.window.__ghCommentFilter.summary();
     const settings = dock.querySelector('.ghdf-settings');
-    ok(!!indicator && shorthand.tagName === 'BUTTON' && settings && settings.tagName === 'BUTTON',
-        'the shorthand and the funnel are buttons, so both can take focus');
+    ok(!!indicator && stateLabel.tagName === 'BUTTON' && settings && settings.tagName === 'BUTTON',
+        'the state label and the funnel are buttons, so both can take focus');
     // The controls are exactly these two, in this order. The progress bar sits
     // in the same box but takes no space and no focus, so it is counted apart.
     const controls = [...indicator.children].filter(el => el.tagName === 'BUTTON');
-    ok(controls.length === 2 && controls[0] === shorthand && controls[1] === settings,
-        'shorthand on the left, funnel on the right, no other control');
+    ok(controls.length === 2 && controls[0] === stateLabel && controls[1] === settings,
+        'state label on the left, funnel on the right, no other control');
     // The filters announce every pass and the bar follows, so "quiet" is only
     // true once they have stopped, filled to the end and faded back out.
     await sleep(2400);
@@ -170,23 +170,34 @@ function loadContentScripts(window) {
         && !bar.classList.contains('ghdf-progress-on'),
         `a progress bar is present and quiet on a diff that has fully arrived`
         + ` (${bar ? bar.className : 'missing'})`);
-    ok(shorthand && shorthand.textContent === `${tests.hidden}:${comments.hiddenLines}`,
-        `shorthand reads files:lines (got "${shorthand && shorthand.textContent}", `
-        + `expected "${tests.hidden}:${comments.hiddenLines}")`);
-    ok(tests.hidden === 1 && comments.hiddenLines > 0, 'and both numbers are real');
+    ok(stateLabel && /^Filters applied$/.test(stateLabel.textContent) && !stateLabel.hidden,
+        `the label says the filters are applied once they are (got "${stateLabel && stateLabel.textContent}")`);
+    ok(tests.hidden === 1 && comments.hiddenLines > 0, 'and there was something to apply them to');
     ok(!!settings.querySelector('svg') && indicator.classList.contains('ghdf-active'),
         'the funnel marks the filters as in force');
-    ok(/1 file and \d+ comment lines? hidden/.test(shorthand.getAttribute('aria-label') || ''),
-        `the shorthand names its numbers for a screen reader (got: ${shorthand.getAttribute('aria-label')})`);
+    // The icon's resting colour has to out-specify the button reset in the same
+    // sheet, which sets color:inherit; when it did not, grey never showed.
+    const iconCss = (doc.getElementById('ghdf-dock-style') || {}).textContent || '';
+    ok(/#ghdf-dock \.ghdf-indicator \.ghdf-settings\{[^}]*color:var\(--fgColor-muted/.test(iconCss)
+        && /\.ghdf-active \.ghdf-settings\{color:var\(--fgColor-success/.test(iconCss),
+        'green while in force, grey at rest, and the grey is specific enough to land');
+    ok(/1 file and \d+ comment lines? hidden/.test(stateLabel.getAttribute('aria-label') || ''),
+        `the figures are still spoken, now that they are not written (got: ${stateLabel.getAttribute('aria-label')})`);
+    // The finished label goes on its own. Its two timers are the ten seconds
+    // it stands for and the fade after it, so both have to pass.
+    const fadeCss = (doc.getElementById('ghdf-dock-style') || {}).textContent || '';
+    ok(/\.ghdf-state\{[^}]*transition:opacity 600ms/.test(fadeCss)
+        && /\.ghdf-state\.ghdf-state-gone\{opacity:0/.test(fadeCss),
+        'it goes by fading rather than by vanishing');
     const css = (doc.getElementById('ghdf-dock-style') || {}).textContent || '';
     ok(/\.ghdf-panel\{display:none/.test(css) && /#ghdf-dock:hover \.ghdf-panel/.test(css)
         && /#ghdf-dock:focus-within \.ghdf-panel/.test(css),
         'the panel is hidden until the dock is hovered or focused');
-    shorthand.click();
-    ok(dock.classList.contains('ghdf-pinned') && shorthand.getAttribute('aria-expanded') === 'true',
-        'a click on the shorthand pins the panel open for readers without a hover');
-    shorthand.click();
-    ok(!dock.classList.contains('ghdf-pinned') && shorthand.getAttribute('aria-expanded') === 'false',
+    stateLabel.click();
+    ok(dock.classList.contains('ghdf-pinned') && stateLabel.getAttribute('aria-expanded') === 'true',
+        'a click on the label pins the panel open for readers without a hover');
+    stateLabel.click();
+    ok(!dock.classList.contains('ghdf-pinned') && stateLabel.getAttribute('aria-expanded') === 'false',
         'and a second click lets it collapse again');
 
     console.log('\n-- the funnel is the settings menu --');
@@ -205,12 +216,28 @@ function loadContentScripts(window) {
     doc.body.click();
     ok(!doc.getElementById('ghtf-popover') && settings.getAttribute('aria-expanded') === 'false',
         'a click elsewhere closes it too, and the funnel follows');
+    // A peek shows the hidden files again but leaves both filters on, so the
+    // icon stays green and only the figures move.
     dom.window.__ghTestFileFilter.peek(true);
     await sleep(50);
-    ok(shorthand.textContent === `0:${comments.hiddenLines}`,
-        `the shorthand follows a peek (got "${shorthand.textContent}")`);
+    ok(indicator.classList.contains('ghdf-active')
+        && /0 files and \d+ comment lines? hidden/.test(stateLabel.getAttribute('aria-label') || ''),
+        `a peek moves the figures and leaves the funnel green (got: ${stateLabel.getAttribute('aria-label')})`);
     dom.window.__ghTestFileFilter.peek(false);
     await sleep(50);
+
+    // With both filters off there is nothing to report and nothing in force.
+    dom.window.__ghTestFileFilter.enabled = false;
+    dom.window.__ghCommentFilter.enabled = false;
+    await sleep(50);
+    ok(stateLabel.hidden && !indicator.classList.contains('ghdf-active'),
+        `no filter active leaves a grey funnel and no label (got hidden=${stateLabel.hidden},`
+        + ` class="${indicator.className}")`);
+    dom.window.__ghTestFileFilter.enabled = true;
+    dom.window.__ghCommentFilter.enabled = true;
+    await sleep(200);
+    ok(!stateLabel.hidden && indicator.classList.contains('ghdf-active'),
+        'and both come back when the filters do');
 
     console.log('\n-- no emoji anywhere in the control --');
     const glyphs = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}]/u;
@@ -317,6 +344,38 @@ function loadContentScripts(window) {
     ok(loading.classList.contains('ghdf-progress-on'),
         `the page changing does start the bar (${loading.className})`);
     ok(later > early && later < 100, `and it fills without arriving early (${early}% then ${later}%)`);
+
+    console.log('\n=== the label says which of the two is happening ===');
+    const label = dock.querySelector('.ghdf-state');
+    ok(label.textContent === 'Applying filters\u2026' && !label.hidden,
+        `it reads as working while the page is still changing (got "${label.textContent}")`);
+    // Still working a beat later: the label has to stay put until the work
+    // stops, not time out under a reader who is waiting on it.
+    host.appendChild(doc.createElement('div'));
+    await sleep(600);
+    ok(label.textContent === 'Applying filters\u2026',
+        `and it stays for as long as that lasts (got "${label.textContent}")`);
+    await sleep(1600);
+    ok(label.textContent === 'Filters applied' && !label.hidden
+        && !label.classList.contains('ghdf-state-gone'),
+        `then says so once the work stops (got "${label.textContent}", `
+        + `class "${label.className}")`);
+    // Ten seconds of standing, then the fade. Worth the wait in the suite:
+    // this is the whole of what the reader was promised would happen.
+    await sleep(10000 + 600 + 300);
+    ok(label.hidden, `and goes on its own once it has been read (class "${label.className}")`);
+    // Gone means gone: a redraw for some unrelated reason must not bring the
+    // finished label back on a page where nothing more has happened.
+    dom.window.__ghTestFileFilter.toggleSettings(true);
+    await sleep(150);
+    dom.window.__ghTestFileFilter.toggleSettings(false);
+    await sleep(150);
+    ok(label.hidden, `and a later redraw does not bring it back (class "${label.className}")`);
+    // New work does, though.
+    host.appendChild(doc.createElement('div'));
+    await sleep(450);
+    ok(!label.hidden && label.textContent === 'Applying filters\u2026',
+        `while more work brings it back (got "${label.textContent}", hidden=${label.hidden})`);
 
     console.log('\n' + (failures === 0 ? 'ALL EXTENSION ASSERTIONS PASS' : failures + ' EXTENSION FAILURES'));
     process.exit(failures ? 1 : 0);

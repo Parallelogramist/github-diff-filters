@@ -206,6 +206,23 @@ const isHidden = (doc, p, index) => codeCell(doc, p, index).classList.contains('
     ok(window.getComputedStyle(pill).display === 'flex',
         `a shown pill keeps its flex layout (got ${window.getComputedStyle(pill).display})`);
 
+    // The changed-line selector is narrowed to the markup the page has proved
+    // it uses, so a file that names its lines any other way is the one thing
+    // narrowing could lose. It is asked again in full instead.
+    console.log('\n=== a file whose markup the narrowed selector does not name ===');
+    const marker = doc.createElement('div');
+    marker.className = 'js-file';
+    marker.setAttribute('data-path', 'src/marker.js');
+    marker.innerHTML = '<div class="file-info">src/marker.js</div><table>'
+        + '<tr><td class="blob-num">1</td><td data-code-marker="+">// a note</td></tr>'
+        + '<tr><td class="blob-num">2</td><td data-code-marker="+">doWork();</td></tr>'
+        + '</table>';
+    doc.body.appendChild(marker);
+    await new Promise(r => setTimeout(r, 600));
+    const markerHidden = marker.querySelectorAll('.ghccf-hidden').length;
+    ok(markerHidden === 1,
+        `its comment line is still hidden (got ${markerHidden} of 1)`);
+
     console.log('\n=== a pass judges the file that changed ===');
     // Counted rather than timed: what a pass costs is how much of the diff it
     // reads, and GitHub renders a large one in bursts, so every burst used to

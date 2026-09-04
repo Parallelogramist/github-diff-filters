@@ -1,11 +1,11 @@
 /**
  * One control in the corner for both filters, and the keyboard shortcuts.
  *
- * Collapsed, it reads `files:lines` beside an icon that shows the filters are
- * in force; on hover or focus it expands to the two pills, which say what was
- * hidden and let the reader show it. The pills are the filters' own elements,
- * created by separate scripts, so their behaviour is theirs; this owns only
- * where they sit.
+ * Collapsed, it says what the filters are doing beside an icon that goes green
+ * while they are in force; on hover or focus it expands to the two pills, which
+ * say what was hidden and let the reader show it. The pills are the filters'
+ * own elements, created by separate scripts, so their behaviour is theirs; this
+ * owns only where they sit.
  */
 (() => {
     'use strict';
@@ -26,6 +26,12 @@
     const STYLE_ID = 'ghdf-dock-style';
     const PINNED_CLASS = 'ghdf-pinned';
     const FUNNEL = '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>';
+    const WORKING_TEXT = 'Applying filters\u2026';
+    const APPLIED_TEXT = 'Filters applied';
+    /** How long the finished label stays before it goes; a label that never leaves stops being read. */
+    const APPLIED_MS = 10000;
+    /** The fade, in CSS and in the timer that hides the element after it. */
+    const FADE_MS = 600;
     const DOCK_CSS = `
 #${DOCK_ID}{position:fixed;right:16px;bottom:16px;z-index:2147483000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
 #${DOCK_ID} .ghdf-panel{display:none;flex-direction:column;align-items:flex-end;gap:6px;}
@@ -33,14 +39,18 @@
 #${DOCK_ID} .ghdf-indicator{position:relative;display:inline-flex;align-items:center;gap:8px;margin:0;padding:6px 10px 6px 12px;border-radius:999px;border:1px solid var(--borderColor-default,#30363d);background:var(--bgColor-default,#0d1117);color:var(--fgColor-default,#e6edf3);font:600 12px/1 var(--fontStack-monospace,ui-monospace,SFMono-Regular,monospace);box-shadow:0 6px 20px rgba(0,0,0,.4);user-select:none;}
 #${DOCK_ID} .ghdf-indicator button{all:unset;display:inline-flex;align-items:center;font:inherit;color:inherit;line-height:1;cursor:pointer;}
 #${DOCK_ID} .ghdf-indicator button:focus-visible{outline:2px solid var(--focus-outlineColor,#1f6feb);outline-offset:3px;border-radius:2px;}
-#${DOCK_ID} .ghdf-settings{padding:3px;margin:-3px;border-radius:50%;color:var(--fgColor-muted,#8b949e);}
+/* Reaches past the button reset above, which sets color:inherit and is the more
+   specific of the two by type. Without this the icon never went grey. */
+#${DOCK_ID} .ghdf-indicator .ghdf-settings{padding:3px;margin:-3px;border-radius:50%;color:var(--fgColor-muted,#8b949e);}
 #${DOCK_ID} .ghdf-settings svg{display:block;}
 #${DOCK_ID} .ghdf-settings:hover,#${DOCK_ID} .ghdf-settings[aria-expanded="true"]{color:var(--fgColor-default,#e6edf3);}
 #${DOCK_ID} .ghdf-indicator.ghdf-active .ghdf-settings{color:var(--fgColor-success,#3fb950);}
 #${DOCK_ID} .ghdf-progress{position:absolute;left:12px;right:10px;bottom:3px;height:2px;border-radius:999px;background:var(--borderColor-muted,#30363d);overflow:hidden;opacity:0;transition:opacity .3s ease;pointer-events:none;}
 #${DOCK_ID} .ghdf-progress.ghdf-progress-on{opacity:1;}
 #${DOCK_ID} .ghdf-progress span{display:block;height:100%;width:0;border-radius:999px;background:var(--fgColor-accent,#388bfd);transition:width .18s ease;}
-@media (prefers-reduced-motion:reduce){#${DOCK_ID} .ghdf-progress span{transition:none;}}
+#${DOCK_ID} .ghdf-state{white-space:nowrap;opacity:1;transition:opacity ${FADE_MS}ms ease;}
+#${DOCK_ID} .ghdf-state.ghdf-state-gone{opacity:0;}
+@media (prefers-reduced-motion:reduce){#${DOCK_ID} .ghdf-progress span,#${DOCK_ID} .ghdf-state{transition:none;}}
 `;
 
     const DEFAULT_KEYS = { tests: 't', comments: 'c', next: 'j', previous: 'k' };
@@ -111,15 +121,18 @@
     let dock;
     let panel;
     let indicator;
-    let shorthand;
+    let stateLabel;
     let settings;
     let progress;
     let progressFill;
     let doneTimer;
     let activityTimer;
     let busy = false;
-    /** The last progress the indicator drew, so the settle can finish it alone. */
-    let drawn = { arrived: 0, expected: 0 };
+    /** What the indicator last drew, so the settle can finish from it alone. */
+    let drawn = { arrived: 0, expected: 0, active: false };
+    let appliedTimer;
+    /** Whether the finished label has already had its say for this run of work. */
+    let retired = false;
     let tick;
     let startedAt = 0;
     let reached = 0;
@@ -168,14 +181,14 @@
             panel.className = 'ghdf-panel';
             indicator = document.createElement('div');
             indicator.className = 'ghdf-indicator';
-            shorthand = document.createElement('button');
-            shorthand.type = 'button';
-            shorthand.className = 'ghdf-shorthand';
-            shorthand.setAttribute('aria-expanded', 'false');
+            stateLabel = document.createElement('button');
+            stateLabel.type = 'button';
+            stateLabel.className = 'ghdf-state';
+            stateLabel.setAttribute('aria-expanded', 'false');
             // Hover is not available to everyone; a click keeps the pills open.
-            shorthand.addEventListener('click', () => {
+            stateLabel.addEventListener('click', () => {
                 const pinned = dock.classList.toggle(PINNED_CLASS);
-                shorthand.setAttribute('aria-expanded', String(pinned));
+                stateLabel.setAttribute('aria-expanded', String(pinned));
             });
             settings = document.createElement('button');
             settings.type = 'button';
@@ -196,7 +209,7 @@
             progress.setAttribute('aria-valuemax', '100');
             progressFill = document.createElement('span');
             progress.append(progressFill);
-            indicator.append(shorthand, settings, progress);
+            indicator.append(stateLabel, settings, progress);
             dock.append(panel, indicator);
             document.body.appendChild(dock);
         }
@@ -217,7 +230,6 @@
         return filter && typeof filter.summary === 'function' ? filter.summary() : null;
     }
 
-    /** `files:lines` — what the test-file filter hid and what the comment filter hid. */
     /**
      * Note that the filters are working. They announce every pass, and GitHub
      * renders a large diff in bursts, so passes keep arriving for as long as
@@ -227,7 +239,10 @@
      * every file has "arrived" and a percentage has nothing left to count.
      */
     function noteActivity() {
-        if (!busy) startedAt = Date.now();
+        if (!busy) {
+            startedAt = Date.now();
+            retired = false;
+        }
         busy = true;
         clearTimeout(activityTimer);
         // The bar advances on its own between bursts: passes arrive in clumps,
@@ -242,6 +257,7 @@
             // the rest would be a write into a page that has gone quiet, which
             // is the thing every observer here is built to avoid.
             renderProgress(false, drawn.arrived, drawn.expected);
+            renderState(false, drawn.active);
         }, SETTLE_MS);
     }
 
@@ -276,16 +292,61 @@
         const key = `${files}:${lines}:${active}:${settingsOpen}:${!!filter}:${arrived}/${expected}:${loading}`;
         if (key === indicatorKey) return;
         indicatorKey = key;
-        shorthand.textContent = `${files}:${lines}`;
         indicator.classList.toggle('ghdf-active', active);
         const count = (n, noun) => `${n.toLocaleString()} ${noun}${n === 1 ? '' : 's'}`;
-        shorthand.setAttribute('aria-label', `Diff filters${active ? '' : ', off'}: ${count(files, 'file')}`
+        // The figures are no longer on the button, so this is the only place
+        // they are spoken; the pills carry them for everyone else.
+        stateLabel.setAttribute('aria-label', `Diff filters${active ? '' : ', off'}: ${count(files, 'file')}`
             + ` and ${count(lines, 'comment line')} hidden. Details on hover or focus.`);
         // The categories belong to the test-file filter; without it there is nothing to open.
         settings.hidden = !filter;
         settings.setAttribute('aria-expanded', String(settingsOpen));
-        drawn = { arrived, expected };
+        drawn = { arrived, expected, active };
+        renderState(loading, active);
         renderProgress(loading, arrived, expected);
+    }
+
+    /**
+     * What the filters are doing, in words.
+     *
+     * A count said what had been hidden but not whether more was coming, and on
+     * a large diff those are seconds apart. The working label stays for as long
+     * as passes keep arriving, so the reader waits on something rather than on
+     * nothing; the finished label says so once and then goes, leaving the icon
+     * to carry the state.
+     */
+    function renderState(loading, active) {
+        if (!stateLabel) return;
+        clearTimeout(appliedTimer);
+        // Nothing is being filtered, so there is nothing to report; and once
+        // the finished label has gone it stays gone until there is more work,
+        // rather than coming back at every unrelated redraw.
+        if (!active || (!loading && retired)) {
+            stateLabel.hidden = true;
+            return;
+        }
+        stateLabel.classList.remove('ghdf-state-gone');
+        stateLabel.hidden = false;
+        const text = loading ? WORKING_TEXT : APPLIED_TEXT;
+        if (stateLabel.textContent !== text) stateLabel.textContent = text;
+        if (loading) return;
+        appliedTimer = setTimeout(retireState, APPLIED_MS);
+    }
+
+    function retireState() {
+        // The label is the only way to pin the panel open, so it stays while
+        // the reader has the panel pinned.
+        if (dock && dock.classList.contains(PINNED_CLASS)) {
+            appliedTimer = setTimeout(retireState, APPLIED_MS);
+            return;
+        }
+        stateLabel.classList.add('ghdf-state-gone');
+        // Hidden only once it has faded, so the pill narrows to the icon in
+        // one movement rather than two.
+        appliedTimer = setTimeout(() => {
+            retired = true;
+            stateLabel.hidden = true;
+        }, FADE_MS);
     }
 
     /**
@@ -298,8 +359,6 @@
     function renderProgress(loading, arrived, expected) {
         if (!progress) return;
         clearTimeout(doneTimer);
-        // Count against a total only where the page gives one that is still
-        // ahead of what has arrived; otherwise say "working" and mean it.
         // Count against a real total where the page gives one that is still
         // ahead of what has arrived; estimate where it does not.
         const counted = expected > arrived;

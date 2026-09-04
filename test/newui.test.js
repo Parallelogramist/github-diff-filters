@@ -79,6 +79,23 @@ const html = `<!doctype html><html><body><div id="files">
     const hidden = doc.querySelectorAll('.ghtf-stub').length;
     ok(hidden === 4, '4 of the 5 readable files hidden (got ' + hidden + ')');
 
+    // The container class carries a build hash, so the filter asks for the
+    // hash it has seen rather than for a prefix no browser can index. A
+    // container built any other way must still be found: that is the one way
+    // GitHub changing the hash can show up, and a miss would silently leave
+    // files unfiltered.
+    console.log('\n-- a container whose class the last pass never saw --');
+    const late = doc.createElement('div');
+    late.className = 'Diff-module__diffTargetable--REBUILT';
+    late.innerHTML = '<div class="DiffHeader-module__container--x1">'
+        + '<span>test/api/spec/</span><span>afterRebuild.spec.js</span><span>+8</span></div>'
+        + '<div class="DiffLine-module__line--z">+ code</div>';
+    doc.getElementById('files').appendChild(late);
+    await new Promise(r => setTimeout(r, 500));
+    ok(late.getAttribute('data-ghtf') === 'hidden',
+        'a container with an unseen hashed class is still classified (got '
+        + late.getAttribute('data-ghtf') + ')');
+
     console.log('\n' + (failures === 0 ? 'ALL NEW-UI ASSERTIONS PASS' : failures + ' NEW-UI FAILURES'));
     process.exit(failures ? 1 : 0);
 })();
