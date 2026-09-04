@@ -31,13 +31,12 @@
     // it and draws the sign in a marker span of its own.
     const ADDITION_SELECTOR = ['.blob-code-addition', 'td[data-code-marker="+"]', '.diff-text.addition'].join(',');
     const DELETION_SELECTOR = ['.blob-code-deletion', 'td[data-code-marker="-"]', '.diff-text.deletion'].join(',');
-    const LINE_SELECTOR = [ADDITION_SELECTOR, DELETION_SELECTOR, '[class*="DiffLine-module"]'].join(',');
+    const LINE_SELECTOR = [ADDITION_SELECTOR, DELETION_SELECTOR].join(',');
     const CODE_SELECTOR = '.diff-text-inner';
     const HUNK_SELECTOR = '.blob-code-hunk,[class*="Hunk"],[class*="hunk"]';
     const REVIEW_COMMENT_SELECTOR = [
         '.review-comment', '.js-comment-container', '.js-inline-comments-container .js-comment',
-        '[class*="ReviewThread"]', '[class*="reviewThread"]',
-        '[data-testid*="comment-thread"]', '[data-testid*="review-thread"]'
+        '[class*="ReviewThread"]', '[data-testid*="comment-thread"]', '[data-testid*="review-thread"]'
     ].join(',');
     const HEADER_SELECTOR = ['.file-info', '.file-header',
         '[class*="DiffHeader"]', '[class*="diffHeader"]',
@@ -110,7 +109,13 @@
             .filter(el => !(el.parentElement && el.parentElement.closest(FILE_SELECTOR)));
     }
 
+    /** A container's path never changes once its header has rendered, so it is read once. */
     function filePath(container) {
+        if (!container.__ghccfPath) container.__ghccfPath = readPath(container);
+        return container.__ghccfPath;
+    }
+
+    function readPath(container) {
         for (const attr of PATH_ATTRS) {
             const own = container.getAttribute(attr);
             if (own) return own.split('→').pop().trim();
@@ -137,18 +142,11 @@
     function changedRows(container) {
         const rows = new Map();
         for (const el of container.querySelectorAll(LINE_SELECTOR)) {
-            if (!isChanged(el)) continue;
             const row = el.closest('tr') || el;
             if (!rows.has(row)) rows.set(row, []);
             rows.get(row).push(el);
         }
         return rows;
-    }
-
-    function isChanged(el) {
-        if (el.matches(ADDITION_SELECTOR) || el.matches(DELETION_SELECTOR)) return true;
-        // The review view carries no marker class; the leading glyph is the sign.
-        return SIGN.test((el.textContent || '').trim());
     }
 
     /** The line's code without its sign, read past the marker where the markup separates them. */
@@ -158,10 +156,9 @@
         return inner ? text : text.replace(SIGN, '');
     }
 
-    /** A hunk header resets the block-comment run; the review view puts it in a row of its own. */
-    function followsHunk(row) {
-        const previous = row.previousElementSibling;
-        return !!previous && (previous.matches(HUNK_SELECTOR) || !!previous.querySelector(HUNK_SELECTOR));
+    /** A hunk header resets the block-comment run. */
+    function followsHunk(row, hunks) {
+        return !!row.previousElementSibling && hunks.has(row.previousElementSibling);
     }
 
     /**
@@ -254,14 +251,36 @@
     }
 
     /**
-     * Whether a row has review feedback on it. GitHub renders an inline thread
-     * as its own row after the line it belongs to, so the line itself contains
-     * nothing — checking only inside it would hide the line a thread is about.
+     * The rows of a file that carry review feedback. GitHub renders an inline
+     * thread as its own row after the line it belongs to, so the line itself
+     * contains nothing — the row before a thread is marked along with it. One
+     * query per file, rather than two per row.
      */
-    function carriesFeedback(row) {
-        if (row.querySelector && row.querySelector(REVIEW_COMMENT_SELECTOR)) return true;
-        const next = row.nextElementSibling;
-        return !!(next && next.querySelector && next.querySelector(REVIEW_COMMENT_SELECTOR));
+    function feedbackRows(container) {
+        const rows = new Set();
+        for (const el of container.querySelectorAll(REVIEW_COMMENT_SELECTOR)) {
+            const row = el.closest('tr') || el;
+            rows.add(row);
+            if (row.previousElementSibling) rows.add(row.previousElementSibling);
+        }
+        return rows;
+    }
+
+    /** The rows holding a hunk header; the review view gives each one a row of its own. */
+    function hunkRows(container) {
+        const rows = new Set();
+        for (const el of container.querySelectorAll(HUNK_SELECTOR)) rows.add(el.closest('tr') || el);
+        return rows;
+    }
+
+    /**
+     * What a file's rows looked like when they were last judged. A pass runs
+     * whenever GitHub renders more of the diff; re-judging every row of every
+     * file for the one file that grew is most of what a pass would cost.
+     */
+    function fileKey(container, path) {
+        return [path, container.querySelectorAll(LINE_SELECTOR).length,
+            container.querySelectorAll('.' + HIDDEN_CLASS).length, hiding()].join('|');
     }
 
     function apply() {
@@ -275,22 +294,12 @@
         let touchedFiles = 0;
         for (const container of containers) {
             const path = filePath(container);
-            const syntax = syntaxFor(path);
-            const state = { inBlock: false };
-            const here = { rows: 0, added: 0, deleted: 0 };
-            for (const [row, cells] of changedRows(container)) {
-                if (carriesFeedback(row)) continue;
-                if (followsHunk(row)) state.inBlock = false;
-                // Every cell is judged, so a block comment's run is tracked
-                // through a row that is only going to stay visible anyway.
-                let noise = hiding();
-                for (const cell of cells) {
-                    if (!isNoise(codeOf(cell), syntax, state)) noise = false;
-                }
-                row.classList.toggle(HIDDEN_CLASS, noise);
-                if (!noise) continue;
-                here.rows++;
-                for (const cell of cells) here[sideOf(cell)]++;
+            const key = fileKey(container, path);
+            let here = container.__ghccfKey === key ? container.__ghccfHidden : null;
+            if (!here) {
+                here = judgeFile(container, syntaxFor(path));
+                container.__ghccfKey = fileKey(container, path);
+                container.__ghccfHidden = here;
             }
             setTally(container, here);
             hiddenLines += here.rows;
@@ -317,9 +326,33 @@
             document.querySelectorAll('.' + HIDDEN_CLASS).length, enabled, paused].join('|');
     }
 
+    /** Judge every changed row of one file; returns what it hid, by row and by side. */
+    function judgeFile(container, syntax) {
+        const state = { inBlock: false };
+        const feedback = feedbackRows(container);
+        const hunks = hunkRows(container);
+        const here = { rows: 0, added: 0, deleted: 0 };
+        for (const [row, cells] of changedRows(container)) {
+            if (feedback.has(row)) continue;
+            if (followsHunk(row, hunks)) state.inBlock = false;
+            // Every cell is judged, so a block comment's run is tracked
+            // through a row that is only going to stay visible anyway.
+            let noise = hiding();
+            for (const cell of cells) {
+                if (!isNoise(codeOf(cell), syntax, state)) noise = false;
+            }
+            row.classList.toggle(HIDDEN_CLASS, noise);
+            if (!noise) continue;
+            here.rows++;
+            for (const cell of cells) here[sideOf(cell)]++;
+        }
+        return here;
+    }
+
     function reset() {
         for (const el of document.querySelectorAll('.' + HIDDEN_CLASS)) el.classList.remove(HIDDEN_CLASS);
         for (const el of document.querySelectorAll('.' + TALLY_CLASS)) el.remove();
+        for (const container of fileContainers()) container.__ghccfKey = null;
         lastSignature = '';
     }
 
@@ -535,8 +568,9 @@
                 if (needle && !path.includes(needle)) continue;
                 const syntax = syntaxFor(path);
                 const state = { inBlock: false };
+                const hunks = hunkRows(container);
                 for (const [row, cells] of changedRows(container)) {
-                    if (followsHunk(row)) state.inBlock = false;
+                    if (followsHunk(row, hunks)) state.inBlock = false;
                     for (const cell of cells) {
                         const code = codeOf(cell);
                         rows.push({ path, code: code.slice(0, 60), syntax: syntax ? 'known' : 'unknown',

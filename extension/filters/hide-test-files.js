@@ -84,8 +84,7 @@
     const DIFF_BODY_SELECTOR = 'tr,[role="row"],[class*="iffLine"],[class*="diff-line"],.blob-code,.blob-num,table';
     const REVIEW_COMMENT_SELECTOR = [
         '.review-comment', '.js-comment-container', '.js-inline-comments-container .js-comment',
-        '[class*="ReviewThread"]', '[class*="reviewThread"]',
-        '[data-testid*="comment-thread"]', '[data-testid*="review-thread"]'
+        '[class*="ReviewThread"]', '[data-testid*="comment-thread"]', '[data-testid*="review-thread"]'
     ].join(',');
     const ANCHOR_ID = /(diff-[0-9a-f]{16,})$/i;
     const HUNK_SELECTOR = '.blob-code-hunk,[class*="Hunk"],[class*="hunk"]';
@@ -466,9 +465,25 @@
         return byId ? (byId.textContent || '').trim() : '';
     }
 
-    /** Whether a file carries review feedback, which must never be collapsed away. */
+    /**
+     * Whether a file carries review feedback, which must never be collapsed
+     * away. During a pass the answer comes from one query over the document
+     * rather than one per file.
+     */
+    let threadHosts = null;
+
     function hasReviewComments(container) {
+        if (threadHosts) return threadHosts.has(container);
         return !!container.querySelector(REVIEW_COMMENT_SELECTOR);
+    }
+
+    function findThreadHosts() {
+        const hosts = new Set();
+        for (const thread of document.querySelectorAll(REVIEW_COMMENT_SELECTOR)) {
+            const host = thread.closest(FILE_SELECTOR);
+            if (host) hosts.add(host);
+        }
+        return hosts;
     }
 
     /** A path carries no whitespace and has either a directory separator or an extension. */
@@ -1640,6 +1655,7 @@
         const signature = quickSignature(containers);
         if (signature === lastSignature) return;
         readTree();
+        threadHosts = findThreadHosts();
         // A pass over part of the diff must keep looking rather than conclude.
         let unresolved = Math.max(0, expectedFileCount() - containers.length);
         const incomplete = unresolved > 0;
@@ -1747,6 +1763,7 @@
         renderPopover(containers);
         diagnose(containers);
         lastSignature = unresolved > 0 ? '' : quickSignature(containers);
+        threadHosts = null;
         scheduleResolve(unresolved);
     }
 
