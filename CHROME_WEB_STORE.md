@@ -50,13 +50,13 @@ Copy you can paste:
 
 **Summary** (single line, keep it under 132 characters)
 
-> Collapses test files and comment-only lines in GitHub pull request diffs, so a review shows only the code that changed.
+> Collapses test files, lockfiles, generated code and comment-only lines in GitHub pull request diffs, so a review shows only the code that changed.
 
 **Description**
 
 > GitHub diff filters shrinks a pull request diff to the part you actually have to read.
 >
-> Hide test files — every test file collapses to a one-line stub showing its path and diffstat. The file tree hides them too, and a directory disappears once every file under it is hidden, so a test/ subtree collapses whole. The PR header gains a second figure beside its own totals, showing how many lines changed outside the tests.
+> Hide files — every test file, snapshot, lockfile, generated or vendored file collapses to a one-line stub showing its path and diffstat, each category switchable per repository. The file tree hides them too, and a directory disappears once every file under it is hidden, so a test/ subtree collapses whole. The PR header gains a second figure beside its own totals, showing how many lines changed outside the tests.
 >
 > Hide comment diffs — hides diff lines whose only change is a comment or whitespace.
 >
@@ -74,7 +74,7 @@ This is where submissions usually stall, so fill it carefully.
 
 **Single purpose**
 
-> Hides parts of a GitHub pull request diff — test files and comment-only lines — so a code review shows only the code that changed.
+> Hides parts of a GitHub pull request diff — test files, lockfiles, generated code and comment-only lines — so a code review shows only the code that changed.
 
 **Host permission justification** (asked because the content script matches
 `https://github.com/*`)

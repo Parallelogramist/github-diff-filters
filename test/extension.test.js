@@ -145,7 +145,7 @@ function loadContentScripts(window) {
     ok(doc.getElementById('ghtf-pill').style.position === 'static',
         'the docked pill stops placing itself');
     const help = dom.window.__ghDiffFilterShortcuts;
-    ok(Array.isArray(help) && help.some(entry => entry.key === 't' && /test files/.test(entry.label))
+    ok(Array.isArray(help) && help.some(entry => entry.key === 't' && /filtered files/.test(entry.label))
         && help.some(entry => entry.key === 'j' && /next visible file/.test(entry.label)),
         'the shortcuts are published for the popover to list');
 

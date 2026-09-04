@@ -41,7 +41,7 @@
 
     const DEFAULT_KEYS = { tests: 't', comments: 'c', next: 'j', previous: 'k' };
     const ACTION_LABELS = {
-        tests: 'hide or show test files',
+        tests: 'hide or show the filtered files',
         comments: 'hide or show comment-only lines',
         next: 'next visible file',
         previous: 'previous visible file'
