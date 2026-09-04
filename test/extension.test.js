@@ -294,6 +294,30 @@ function loadContentScripts(window) {
     ok(loading.getAttribute('aria-valuenow') === '100',
         `it fills to the end when the diff is complete (got ${loading.getAttribute('aria-valuenow')})`);
 
+    console.log('\n=== the reader is not the diff ===');
+    // Everything the filters do announces itself the same way, so the bar has
+    // to be told which announcements mean the page is still filling in.
+    await sleep(2400);
+    dom.window.__ghTestFileFilter.toggleSettings(true);
+    await sleep(200);
+    ok(!loading.classList.contains('ghdf-progress-on'),
+        `opening the menu leaves the bar alone (${loading.className})`);
+    dom.window.__ghTestFileFilter.toggleSettings(false);
+    await sleep(200);
+    ok(!loading.classList.contains('ghdf-progress-on'), 'and so does closing it');
+
+    console.log('\n=== the bar fills as the work goes on ===');
+    const host = doc.querySelector('.js-file,[class^="Diff-module__diffTargetable"]') || doc.body;
+    host.appendChild(doc.createElement('div'));
+    await sleep(450);
+    const early = parseFloat(loading.firstElementChild.style.width) || 0;
+    host.appendChild(doc.createElement('div'));
+    await sleep(550);
+    const later = parseFloat(loading.firstElementChild.style.width) || 0;
+    ok(loading.classList.contains('ghdf-progress-on'),
+        `the page changing does start the bar (${loading.className})`);
+    ok(later > early && later < 100, `and it fills without arriving early (${early}% then ${later}%)`);
+
     console.log('\n' + (failures === 0 ? 'ALL EXTENSION ASSERTIONS PASS' : failures + ' EXTENSION FAILURES'));
     process.exit(failures ? 1 : 0);
 })();

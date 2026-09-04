@@ -1,6 +1,6 @@
 {
     "name": "github-diff-filters",
-    "version": "1.18.1",
+    "version": "1.19.0",
     "private": true,
     "description": "Chrome extension that hides test files and comment-only diff lines on GitHub pull request diffs.",
     "license": "MIT",

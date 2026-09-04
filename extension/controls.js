@@ -40,9 +40,7 @@
 #${DOCK_ID} .ghdf-progress{position:absolute;left:12px;right:10px;bottom:3px;height:2px;border-radius:999px;background:var(--borderColor-muted,#30363d);overflow:hidden;opacity:0;transition:opacity .3s ease;pointer-events:none;}
 #${DOCK_ID} .ghdf-progress.ghdf-progress-on{opacity:1;}
 #${DOCK_ID} .ghdf-progress span{display:block;height:100%;width:0;border-radius:999px;background:var(--fgColor-accent,#388bfd);transition:width .18s ease;}
-#${DOCK_ID} .ghdf-progress.ghdf-progress-sweep span{width:35%;transition:none;animation:ghdf-sweep 1.1s ease-in-out infinite;}
-@keyframes ghdf-sweep{0%{transform:translateX(-110%);}100%{transform:translateX(300%);}}
-@media (prefers-reduced-motion:reduce){#${DOCK_ID} .ghdf-progress.ghdf-progress-sweep span{animation:none;width:100%;opacity:.5;}}
+@media (prefers-reduced-motion:reduce){#${DOCK_ID} .ghdf-progress span{transition:none;}}
 `;
 
     const DEFAULT_KEYS = { tests: 't', comments: 'c', next: 'j', previous: 'k' };
@@ -122,6 +120,9 @@
     let busy = false;
     /** The last progress the indicator drew, so the settle can finish it alone. */
     let drawn = { arrived: 0, expected: 0 };
+    let tick;
+    let startedAt = 0;
+    let reached = 0;
     /**
      * How long after the last pass the filters are taken to be finished.
      * Measured on a 129-file review: GitHub's rendering bursts leave gaps of
@@ -226,15 +227,39 @@
      * every file has "arrived" and a percentage has nothing left to count.
      */
     function noteActivity() {
+        if (!busy) startedAt = Date.now();
         busy = true;
         clearTimeout(activityTimer);
+        // The bar advances on its own between bursts: passes arrive in clumps,
+        // and a bar that only moved when one landed would sit still through
+        // the gaps that make a load feel slow.
+        if (!tick) tick = setInterval(() => renderProgress(true, drawn.arrived, drawn.expected), 140);
         activityTimer = setTimeout(() => {
             busy = false;
+            clearInterval(tick);
+            tick = null;
             // Only the bar has anything to say when the work stops. Rewriting
             // the rest would be a write into a page that has gone quiet, which
             // is the thing every observer here is built to avoid.
             renderProgress(false, drawn.arrived, drawn.expected);
         }, SETTLE_MS);
+    }
+
+    /**
+     * How far along to draw when the page offers no total to count against.
+     *
+     * The review view renders by viewport, so the files on screen are never a
+     * fraction of a knowable whole and no counted bar could ever complete.
+     * This estimates from elapsed time instead, approaching the end without
+     * reaching it, and never going backwards within a run; the settle takes it
+     * the rest of the way. Same shape as a browser's own load bar, and for the
+     * same reason.
+     */
+    function estimate() {
+        const elapsed = Date.now() - (startedAt || Date.now());
+        const eased = 92 * (1 - Math.exp(-elapsed / 1400));
+        reached = Math.max(reached, Math.round(eased));
+        return Math.max(6, reached);
     }
 
     function renderIndicator() {
@@ -275,25 +300,26 @@
         clearTimeout(doneTimer);
         // Count against a total only where the page gives one that is still
         // ahead of what has arrived; otherwise say "working" and mean it.
+        // Count against a real total where the page gives one that is still
+        // ahead of what has arrived; estimate where it does not.
         const counted = expected > arrived;
         if (loading) {
-            const percent = counted ? Math.min(100, Math.round((arrived / expected) * 100)) : 0;
+            // A sliver reads as "started"; nothing reads as broken.
+            const percent = Math.max(4, counted
+                ? Math.min(100, Math.round((arrived / expected) * 100))
+                : estimate());
             progress.classList.add('ghdf-progress-on');
-            progress.classList.toggle('ghdf-progress-sweep', !counted);
-            if (counted) {
+            if (progress.getAttribute('aria-valuenow') !== String(percent)) {
                 progress.setAttribute('aria-valuenow', String(percent));
-                // A sliver reads as "started"; nothing reads as broken.
-                progressFill.style.width = `${Math.max(4, percent)}%`;
-            } else {
-                progress.removeAttribute('aria-valuenow');
-                progressFill.style.width = '';
+                progressFill.style.width = `${percent}%`;
             }
             return;
         }
         if (!progress.classList.contains('ghdf-progress-on')) return;
-        progress.classList.remove('ghdf-progress-sweep');
         progress.setAttribute('aria-valuenow', '100');
         progressFill.style.width = '100%';
+        startedAt = 0;
+        reached = 0;
         doneTimer = setTimeout(() => progress.classList.remove('ghdf-progress-on'), 900);
     }
 
@@ -350,8 +376,11 @@
     document.addEventListener('keydown', onKeyDown, true);
     // A filter announces each change to its pill, including a pill it had to
     // put back after a navigation replaced body.
-    document.addEventListener(STATE_EVENT, () => {
-        noteActivity();
+    document.addEventListener(STATE_EVENT, event => {
+        // Only the page filling the diff in counts as work. Switching a
+        // category, or opening this menu, announces itself the same way and
+        // used to make the bar start over on every click.
+        if (event.detail && event.detail.arriving) noteActivity();
         ensureDock();
     });
     ensureDock();

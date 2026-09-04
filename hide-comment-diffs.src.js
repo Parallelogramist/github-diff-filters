@@ -15,7 +15,7 @@
      * there is no extension API to ask, so it carries the number and `build.sh`
      * checks it against the manifest.
      */
-    const VERSION = '1.18.1';
+    const VERSION = '1.19.0';
 
     const ENABLED_KEY = 'gh-hide-comment-diffs:enabled';
     const PAUSED_KEY = 'gh-hide-comment-diffs:paused';
@@ -116,6 +116,8 @@
      */
     let pendingPage = true;
     let pendingFiles = new Set();
+    /** Whether the observer reported anything since the last pass; see the sibling filter. */
+    let sawMutations = false;
     let knownContainers = null;
     let scheduled;
     let waitingSince = 0;
@@ -303,8 +305,10 @@
         if (!force && !pendingPage && pendingFiles.size === 0) return lastSummary;
         const pageChanged = force || pendingPage;
         const touched = pendingFiles;
+        const fromPage = sawMutations && !force;
         pendingPage = false;
         pendingFiles = new Set();
+        sawMutations = false;
         // A file arriving, or being replaced, mutates the list that holds it,
         // which is outside every file and so reported as a page change.
         if (pageChanged || !knownContainers) knownContainers = fileContainers();
@@ -330,7 +334,7 @@
             hiddenDeleted += here.deleted;
             if (here.rows > 0) touchedFiles++;
         }
-        renderPill(containers.length, hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted);
+        renderPill(containers.length, hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted, fromPage);
         return lastSummary;
     }
 
@@ -395,7 +399,7 @@
      * like any other mutation, and a pass that rewrites its own pill schedules
      * the next pass, for as long as the page is open.
      */
-    function renderPill(files, hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted) {
+    function renderPill(files, hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted, arriving) {
         if (!pill) {
             pill = document.createElement('div');
             pill.id = PILL_ID;
@@ -426,15 +430,20 @@
         }
         const summary = {
             hiddenLines, hiddenAdded, hiddenDeleted, touchedFiles, files,
-            enabled, paused, hiding: hiding()
+            arriving: !!arriving, enabled, paused, hiding: hiding()
         };
         const key = JSON.stringify(summary);
-        if (key === pillKey) return;
+        if (key === pillKey) {
+            // See the sibling filter: a pass the page caused still says the
+            // diff is arriving, whether or not the pill's wording moved.
+            if (arriving) announce(summary);
+            return;
+        }
         pillKey = key;
         lastSummary = summary;
         if (files === 0) {
             pill.style.display = 'none';
-            document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: Object.assign({ source: 'comments' }, summary) }));
+            announce(summary);
             return;
         }
         pill.style.display = 'flex';
@@ -473,7 +482,14 @@
             chip.style.cssText = 'padding:3px 9px;font-weight:600;color:var(--fgColor-default,#e6edf3);';
             pill.append(chip);
         }
-        document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: Object.assign({ source: 'comments' }, summary) }));
+        announce(summary);
+    }
+
+    /** What the pill is reporting, for whatever else draws from it. */
+    function announce(summary) {
+        document.dispatchEvent(new CustomEvent(STATE_EVENT, {
+            detail: Object.assign({ source: 'comments' }, summary)
+        }));
     }
 
     // ------------------------------------------------------------ lifecycle
@@ -538,7 +554,9 @@
             markMutated(record.target, memo);
             acted = true;
         }
-        if (acted) schedule();
+        if (!acted) return;
+        sawMutations = true;
+        schedule();
     }
 
     function install() {

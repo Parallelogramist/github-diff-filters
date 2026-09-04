@@ -22,7 +22,7 @@
      * there is no extension API to ask, so it carries the number and `build.sh`
      * checks it against the manifest.
      */
-    const VERSION = '1.18.1';
+    const VERSION = '1.19.0';
 
     const ENABLED_KEY = 'gh-hide-test-files:enabled';
     const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';
@@ -390,6 +390,13 @@
      */
     let pendingPage = true;
     let pendingFiles = new Set();
+    /**
+     * Whether the observer has reported anything since the last pass consumed
+     * it. A pass the page caused means the diff is still arriving; a pass the
+     * reader caused, by opening the menu or switching a category, does not —
+     * and anything drawing progress needs to tell those apart.
+     */
+    let sawMutations = false;
     /** Whether the file tree itself changed, which is rarer than the diff doing so. */
     let pendingTree = true;
     let knownContainers = null;
@@ -1015,7 +1022,7 @@
      * like any other mutation, and a pass that rewrites its own pill schedules
      * the next pass, for as long as the page is open.
      */
-    function renderPill(containers, incomplete, expected) {
+    function renderPill(containers, incomplete, expected, arriving) {
         if (!pill) {
             pill = document.createElement('div');
             pill.id = PILL_ID;
@@ -1094,11 +1101,20 @@
             // progress: never fewer than have arrived, so a stale or unreadable
             // count cannot read as having gone backwards.
             expected: Math.max(expected || 0, containers.length),
+            // Whether more of the diff is on its way, for anything drawing
+            // progress: true only for a pass the page itself caused.
+            arriving: !!arriving,
             commented: badges.commented, unchanged: badges.unchanged,
             enabled, paused, hiding: hiding(), incomplete: !!incomplete
         };
         const key = JSON.stringify([summary, state, action]);
-        if (key === pillKey) return;
+        if (key === pillKey) {
+            // Nothing to redraw, but a pass the page caused still means the
+            // diff is arriving, and whatever draws progress has no other way
+            // to know a burst is still going.
+            if (arriving) announce(summary);
+            return;
+        }
         pillKey = key;
         lastSummary = summary;
 
@@ -1118,7 +1134,7 @@
                 pill.style.borderColor = 'var(--borderColor-default,#30363d)';
             }
         }
-        document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: Object.assign({ source: 'files' }, summary) }));
+        announce(summary);
     }
 
     let popoverOpen = false;
@@ -1299,11 +1315,23 @@
     }
 
     /** Open or close the category popover, and say so, for the control that shows its state. */
+    /** What the pill is reporting, for whatever else draws from it. */
+    function announce(summary) {
+        document.dispatchEvent(new CustomEvent(STATE_EVENT, {
+            detail: Object.assign({ source: 'files' }, summary)
+        }));
+    }
+
     function setSettingsOpen(open) {
         if (popoverOpen === open) return;
         popoverOpen = open;
-        renderPopover(fileContainers());
-        document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: Object.assign({ source: 'files' }, lastSummary) }));
+        renderPopover(knownContainers || fileContainers());
+        // Opening the menu changes nothing about the diff, so it says so: the
+        // corner control draws its progress bar from this, and an event that
+        // looked like arrival made the bar start over on every click.
+        document.dispatchEvent(new CustomEvent(STATE_EVENT, {
+            detail: Object.assign({ source: 'files' }, lastSummary, { arriving: false })
+        }));
     }
 
     // ------------------------------------------------------------- file tree
@@ -1767,8 +1795,10 @@
         if (!force && !pendingPage && pendingFiles.size === 0) return;
         const pageChanged = force || pendingPage;
         const touched = pendingFiles;
+        const fromPage = sawMutations && !force;
         pendingPage = false;
         pendingFiles = new Set();
+        sawMutations = false;
         headerLeafCache = new WeakMap();
         if (pendingTree) {
             rowLeaves = new WeakMap();
@@ -1890,7 +1920,7 @@
         pruneStubs();
         applyTree(containers);
         renderVisibleTotals(containers);
-        renderPill(containers, incomplete, expected);
+        renderPill(containers, incomplete, expected, fromPage || unresolved > 0);
         renderPopover(containers);
         diagnose(containers);
         scheduleResolve(unresolved);
@@ -2059,7 +2089,9 @@
             markMutated(record.target, memo);
             acted = true;
         }
-        if (acted) schedule();
+        if (!acted) return;
+        sawMutations = true;
+        schedule();
     }
 
     function install() {
