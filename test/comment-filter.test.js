@@ -206,6 +206,32 @@ const isHidden = (doc, p, index) => codeCell(doc, p, index).classList.contains('
     ok(window.getComputedStyle(pill).display === 'flex',
         `a shown pill keeps its flex layout (got ${window.getComputedStyle(pill).display})`);
 
+    console.log('\n=== a pass judges the file that changed ===');
+    // Counted rather than timed: what a pass costs is how much of the diff it
+    // reads, and GitHub renders a large one in bursts, so every burst used to
+    // cost a re-judging of every file already on screen.
+    const original = window.Element.prototype.querySelectorAll;
+    let queries = 0;
+    window.Element.prototype.querySelectorAll = function (...args) {
+        queries++;
+        return original.apply(this, args);
+    };
+    api.apply();
+    const everyFile = queries;
+    const hiddenBefore = doc.querySelectorAll('.ghccf-hidden').length;
+    queries = 0;
+    doc.querySelector('.js-file[data-path="src/app.js"] table')
+        .insertAdjacentHTML('beforeend', rows([['+', '// appended later']]));
+    await new Promise(r => setTimeout(r, 600));
+    const oneFile = queries;
+    window.Element.prototype.querySelectorAll = original;
+    console.log(`  re-judging every file ${everyFile} queries, the one that changed ${oneFile}`);
+    ok(doc.querySelectorAll('.ghccf-hidden').length === hiddenBefore + 1,
+        `the appended comment line is hidden (got ${doc.querySelectorAll('.ghccf-hidden').length}`
+        + ` against ${hiddenBefore + 1})`);
+    ok(oneFile > 0 && oneFile < everyFile / 2,
+        `only the file that changed is read again (${oneFile} queries against ${everyFile})`);
+
     console.log('\n' + (failures === 0 ? 'ALL COMMENT-FILTER ASSERTIONS PASS' : failures + ' COMMENT-FILTER FAILURES'));
     process.exit(failures ? 1 : 0);
 })();

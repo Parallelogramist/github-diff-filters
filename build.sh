@@ -10,6 +10,29 @@ NODE_MODULES="$HERE/node_modules"
 NAMES=("$@")
 if [ ${#NAMES[@]} -eq 0 ]; then NAMES=(hide-test-files hide-comment-diffs); fi
 
+# Each filter reports its own version, which is how a reader confirms which
+# build is in the page. A content script in the page's own world has no
+# extension API to read it from, so the number lives in the source and is
+# checked here rather than trusted to stay in step.
+MANIFEST_VERSION="$(node -p "require('$HERE/extension/manifest.json').version")"
+PACKAGE_VERSION="$(node -p "require('$HERE/package.json').version")"
+if [ "$PACKAGE_VERSION" != "$MANIFEST_VERSION" ]; then
+    printf 'package.json says %s but the manifest says %s\n' "$PACKAGE_VERSION" "$MANIFEST_VERSION" >&2
+    exit 1
+fi
+for NAME in hide-test-files hide-comment-diffs; do
+    SRC_VERSION="$(node -p "
+        const text = require('fs').readFileSync('$HERE/$NAME.src.js', 'utf8');
+        const found = text.match(/const VERSION = '([^']+)'/);
+        found ? found[1] : ''
+    ")"
+    if [ "$SRC_VERSION" != "$MANIFEST_VERSION" ]; then
+        printf '%s declares version %s but the manifest says %s\n' \
+            "$NAME.src.js" "$SRC_VERSION" "$MANIFEST_VERSION" >&2
+        exit 1
+    fi
+done
+
 for NAME in "${NAMES[@]}"; do
     SRC="$HERE/$NAME.src.js"
     MIN="$HERE/$NAME.min.js"

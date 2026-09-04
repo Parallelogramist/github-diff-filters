@@ -13,6 +13,13 @@
 
     if (window.__ghCommentFilter) return;
 
+    /**
+     * Which build is in the page. A filter runs in the page's own world, where
+     * there is no extension API to ask, so it carries the number and `build.sh`
+     * checks it against the manifest.
+     */
+    const VERSION = '1.14.0';
+
     const ENABLED_KEY = 'gh-hide-comment-diffs:enabled';
     const PAUSED_KEY = 'gh-hide-comment-diffs:paused';
     const STYLE_ID = 'ghccf-style';
@@ -21,8 +28,12 @@
     const PILL_ID = 'ghccf-pill';
     const DOCK_ID = 'ghdf-dock';
     const TEST_FILTER_PILL_ID = 'ghtf-pill';
-    const DEBOUNCE_MS = 300;
-    const MAX_WAIT_MS = 1000;
+    // A pass now reads the file that changed rather than the diff, so it can
+    // run promptly instead of sparingly: hiding lands about as fast as the
+    // reader can see the file arrive, and a burst costs less in total than the
+    // few expensive passes it used to get.
+    const DEBOUNCE_MS = 120;
+    const MAX_WAIT_MS = 400;
     /** On everything this script and its siblings put in the page; the observer skips it. */
     const UI_CLASS = 'ghdf-ui';
     /** Fired after the pill changes, for whatever docks it. */
@@ -97,7 +108,18 @@
     let pill;
     let pillKey = '';
     let lastSummary = null;
-    let lastSignature = '';
+    /**
+     * What the observer has seen since the last pass, which is the only thing
+     * that can make one necessary. A pass used to re-derive this by counting
+     * the diff's changed rows and its own hidden ones: on a 129-file review,
+     * 4ms a pass to establish that 1,997 rows were where it left them.
+     *
+     * `pendingPage` covers a change outside every file, which may have added
+     * one; `pendingFiles` names the files whose own rows changed.
+     */
+    let pendingPage = true;
+    let pendingFiles = new Set();
+    let knownContainers = null;
     let scheduled;
     let waitingSince = 0;
 
@@ -276,57 +298,43 @@
         return rows;
     }
 
-    /**
-     * What a file's rows looked like when they were last judged. A pass runs
-     * whenever GitHub renders more of the diff; re-judging every row of every
-     * file for the one file that grew is most of what a pass would cost.
-     */
-    function fileKey(container, path) {
-        return [path, container.querySelectorAll(LINE_SELECTOR).length,
-            container.querySelectorAll('.' + HIDDEN_CLASS).length, hiding()].join('|');
-    }
-
-    function apply() {
-        const containers = fileContainers();
-        const signature = quickSignature(containers);
-        if (signature === lastSignature) return lastSummary;
+    function apply(options) {
+        const force = !!(options && options.force);
+        // Nothing has changed, so every row is already judged as this pass
+        // would judge it. Answered from what the observer reported rather than
+        // by counting the diff, which is most of what a pass used to cost.
+        if (!force && !pendingPage && pendingFiles.size === 0) return lastSummary;
+        const pageChanged = force || pendingPage;
+        const touched = pendingFiles;
+        pendingPage = false;
+        pendingFiles = new Set();
+        // A file arriving, or being replaced, mutates the list that holds it,
+        // which is outside every file and so reported as a page change.
+        if (pageChanged || !knownContainers) knownContainers = fileContainers();
+        const containers = knownContainers;
         styleElement();
         let hiddenLines = 0;
         let hiddenAdded = 0;
         let hiddenDeleted = 0;
         let touchedFiles = 0;
         for (const container of containers) {
-            const path = filePath(container);
-            const key = fileKey(container, path);
-            let here = container.__ghccfKey === key ? container.__ghccfHidden : null;
+            // A file whose rows have not changed keeps its verdict, tally and
+            // all: what it counted still stands, so the totals still foot. A
+            // pass asked for by hand re-judges every file regardless, because
+            // whatever prompted it may not be visible from in here.
+            let here = force || touched.has(container) ? null : container.__ghccfHidden;
             if (!here) {
-                here = judgeFile(container, syntaxFor(path));
-                container.__ghccfKey = fileKey(container, path);
+                here = judgeFile(container, syntaxFor(filePath(container)));
                 container.__ghccfHidden = here;
+                setTally(container, here);
             }
-            setTally(container, here);
             hiddenLines += here.rows;
             hiddenAdded += here.added;
             hiddenDeleted += here.deleted;
             if (here.rows > 0) touchedFiles++;
         }
-        renderPill(hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted);
-        lastSignature = quickSignature(containers);
+        renderPill(containers.length, hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted);
         return lastSummary;
-    }
-
-    /**
-     * What a pass would react to, cheap enough to check on every one: the rows
-     * on screen, how many still wear the hidden class — a row GitHub replaced
-     * has lost it — and the preferences in force.
-     */
-    function quickSignature(containers) {
-        // A header that renders after its rows names the language late, and
-        // with it every comment line the rows were holding.
-        let named = 0;
-        for (const container of containers) if (filePath(container)) named++;
-        return [containers.length, named, document.querySelectorAll(LINE_SELECTOR).length,
-            document.querySelectorAll('.' + HIDDEN_CLASS).length, enabled, paused].join('|');
     }
 
     /** Judge every changed row of one file; returns what it hid, by row and by side. */
@@ -355,8 +363,10 @@
     function reset() {
         for (const el of document.querySelectorAll('.' + HIDDEN_CLASS)) el.classList.remove(HIDDEN_CLASS);
         for (const el of document.querySelectorAll('.' + TALLY_CLASS)) el.remove();
-        for (const container of fileContainers()) container.__ghccfKey = null;
-        lastSignature = '';
+        for (const container of fileContainers()) container.__ghccfHidden = null;
+        pendingPage = true;
+        pendingFiles = new Set();
+        knownContainers = null;
     }
 
     // ----------------------------------------------------------------- pill
@@ -388,8 +398,7 @@
      * like any other mutation, and a pass that rewrites its own pill schedules
      * the next pass, for as long as the page is open.
      */
-    function renderPill(hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted) {
-        const containers = fileContainers().length;
+    function renderPill(files, hiddenLines, touchedFiles, hiddenAdded, hiddenDeleted) {
         if (!pill) {
             pill = document.createElement('div');
             pill.id = PILL_ID;
@@ -419,14 +428,14 @@
             if (pill.style.bottom !== bottom) pill.style.bottom = bottom;
         }
         const summary = {
-            hiddenLines, hiddenAdded, hiddenDeleted, touchedFiles, files: containers,
+            hiddenLines, hiddenAdded, hiddenDeleted, touchedFiles, files,
             enabled, paused, hiding: hiding()
         };
         const key = JSON.stringify(summary);
         if (key === pillKey) return;
         pillKey = key;
         lastSummary = summary;
-        if (containers === 0) {
+        if (files === 0) {
             pill.style.display = 'none';
             document.dispatchEvent(new CustomEvent(STATE_EVENT, { detail: Object.assign({ source: 'comments' }, summary) }));
             return;
@@ -492,16 +501,13 @@
     }
 
     /**
-     * Whether a batch of mutations touched anything that is not this
-     * extension's own UI. Reacting to our own writes is what made a pass
-     * schedule the next one.
+     * Whether a mutation touched anything that is not this extension's own UI.
+     * Reacting to our own writes is what made a pass schedule the next one.
      */
-    function foreign(records) {
-        for (const record of records) {
-            if (ownNode(record.target)) continue;
-            for (const node of record.addedNodes) if (!ownNode(node)) return true;
-            for (const node of record.removedNodes) if (!ownNode(node)) return true;
-        }
+    function foreign(record) {
+        if (ownNode(record.target)) return false;
+        for (const node of record.addedNodes) if (!ownNode(node)) return true;
+        for (const node of record.removedNodes) if (!ownNode(node)) return true;
         return false;
     }
 
@@ -510,21 +516,53 @@
         return !!(el && el.closest(`.${UI_CLASS}`));
     }
 
+    /**
+     * Where a mutation landed, which is what the next pass needs to know. A
+     * change inside one file can only change that file's lines; a change
+     * anywhere else may have added a file.
+     */
+    function markMutated(target, memo) {
+        const el = target && target.nodeType === 1 ? target : target && target.parentElement;
+        if (!el) return;
+        // A render burst arrives as many records against the same few targets.
+        if (el !== memo.target) {
+            memo.target = el;
+            memo.host = el.closest(FILE_SELECTOR);
+        }
+        if (memo.host) pendingFiles.add(memo.host);
+        else pendingPage = true;
+    }
+
     function onMutations(records) {
-        if (foreign(records)) schedule();
+        const memo = { target: null, host: null };
+        let acted = false;
+        for (const record of records) {
+            if (!foreign(record)) continue;
+            markMutated(record.target, memo);
+            acted = true;
+        }
+        if (acted) schedule();
     }
 
     function install() {
         apply();
         // documentElement, not body: GitHub replaces body on a navigation.
         new MutationObserver(onMutations).observe(document.documentElement, { childList: true, subtree: true });
+        // A navigation replaces the page, so nothing the last pass read of it
+        // still holds.
         for (const event of ['turbo:load', 'turbo:render', 'pjax:end', 'popstate']) {
-            window.addEventListener(event, schedule);
+            window.addEventListener(event, () => {
+                pendingPage = true;
+                knownContainers = null;
+                schedule();
+            });
         }
     }
 
     const api = {
-        apply,
+        version: VERSION,
+        /** Re-judge the diff now, whether or not anything has changed since the last pass. */
+        apply: () => apply({ force: true }),
         reset,
         get enabled() {
             return enabled;

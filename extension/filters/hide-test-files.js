@@ -17,6 +17,13 @@
         return;
     }
 
+    /**
+     * Which build is in the page. A filter runs in the page's own world, where
+     * there is no extension API to ask, so it carries the number and `build.sh`
+     * checks it against the manifest.
+     */
+    const VERSION = '1.14.0';
+
     const ENABLED_KEY = 'gh-hide-test-files:enabled';
     const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';
     const ONLY_CHANGED_KEY = 'gh-hide-test-files:onlyChanged';
@@ -47,8 +54,12 @@
         binary: 'Binary files',
         viewed: 'Files you marked viewed'
     };
-    const DEBOUNCE_MS = 300;
-    const MAX_WAIT_MS = 1000;
+    // A pass now reads the file that changed rather than the diff, so it can
+    // run promptly instead of sparingly: hiding lands about as fast as the
+    // reader can see the file arrive, and a burst costs less in total than the
+    // few expensive passes it used to get.
+    const DEBOUNCE_MS = 120;
+    const MAX_WAIT_MS = 400;
     /** On everything this script and its siblings put in the page; the observer skips it. */
     const UI_CLASS = 'ghdf-ui';
     /** Fired after the pill changes, for whatever docks it. */
@@ -233,7 +244,7 @@
     }
 
     function readOnlyChanged() {
-        return localStorage.getItem(onlyChangedKey()) === 'true';
+        return localStorage.getItem(onlyChangedKey()) !== 'false';
     }
 
     function pausedKey() {
@@ -361,7 +372,27 @@
     let resolveScope;
     let treePathByAnchor = new Map();
     let treeStatByAnchor = new Map();
-    let lastSignature = '';
+    /**
+     * What the observer has seen since the last pass, which is the only thing
+     * that can make one necessary. A pass used to re-derive this by counting
+     * matches for six selectors across the document: on a 129-file review, 5ms
+     * over 57,000 nodes to establish that three review threads and one tree
+     * were where the last pass left them.
+     *
+     * `pendingPage` covers everything outside a file: the set of files, the
+     * tree, the header the totals are written into. `pendingFiles` names the
+     * files whose own subtree changed, which is all a file's verdict reads.
+     */
+    let pendingPage = true;
+    let pendingFiles = new Set();
+    /** Whether the file tree itself changed, which is rarer than the diff doing so. */
+    let pendingTree = true;
+    let knownContainers = null;
+    /** What each tree row reads as, and the anchor it links to; see `ownLeaves`. */
+    let rowLeaves = new WeakMap();
+    let rowAnchors = new WeakMap();
+    /** What each file's header reads as, for the length of one pass; see `headerLeaves`. */
+    let headerLeafCache = new WeakMap();
     /**
      * Counts memoised for the duration of one pass, which asks for a file's
      * counts several times over — for its fingerprint, its stub and the header
@@ -467,23 +498,14 @@
 
     /**
      * Whether a file carries review feedback, which must never be collapsed
-     * away. During a pass the answer comes from one query over the document
-     * rather than one per file.
+     * away. Asked of the files a pass is deciding rather than of the document,
+     * which is cheaper the moment a pass decides fewer than all of them: none
+     * of these selectors can be indexed, so the document form has to test
+     * every element on the page — 3ms to find three threads on a 129-file
+     * review.
      */
-    let threadHosts = null;
-
     function hasReviewComments(container) {
-        if (threadHosts) return threadHosts.has(container);
         return !!container.querySelector(REVIEW_COMMENT_SELECTOR);
-    }
-
-    function findThreadHosts() {
-        const hosts = new Set();
-        for (const thread of document.querySelectorAll(REVIEW_COMMENT_SELECTOR)) {
-            const host = thread.closest(FILE_SELECTOR);
-            if (host) hosts.add(host);
-        }
-        return hosts;
     }
 
     /** A path carries no whitespace and has either a directory separator or an extension. */
@@ -611,16 +633,35 @@
      * A container's leading text, stopping where the diff body starts. Headers
      * come first in document order, and their class names differ between the two
      * GitHub diff views, so position is a steadier guide than a selector.
+     *
+     * Held for the length of one pass, because a pass reads the same header to
+     * name the file, to count its lines and to recognise a rename or a binary.
+     * The array is shared with those readers, so none of them may change it.
      */
     function headerLeaves(container, limit) {
+        const cached = headerLeafCache.get(container);
+        // A shorter reading is the start of a longer one, and a reading that
+        // stopped at the diff body is all there is to read.
+        if (cached && (cached.limit >= limit || cached.leaves.length < cached.limit)) {
+            return cached.leaves.length <= limit ? cached.leaves : cached.leaves.slice(0, limit);
+        }
         const out = [];
         const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        // A header's text nodes share a handful of parents, and asking where
+        // the diff body starts is the expensive half of this walk.
+        let checked = null;
+        let inBody = false;
         for (let node = walker.nextNode(); node && out.length < limit; node = walker.nextNode()) {
             const parent = node.parentElement;
-            if (parent && parent.closest(DIFF_BODY_SELECTOR)) break;
+            if (parent !== checked) {
+                checked = parent;
+                inBody = !!(parent && parent.closest(DIFF_BODY_SELECTOR));
+            }
+            if (inBody) break;
             const text = node.nodeValue.trim();
             if (text) out.push(text);
         }
+        headerLeafCache.set(container, { limit, leaves: out });
         return out;
     }
 
@@ -688,17 +729,21 @@
      * present before the diff body renders.
      */
     function statedCounts(container) {
-        const header = headerOf(container) || container;
-        const sources = headerLeaves(container, 40);
-        for (const el of header.querySelectorAll('[aria-label],[title]')) {
-            sources.push(el.getAttribute('aria-label') || '', el.getAttribute('title') || '');
-        }
-        for (const text of sources) {
+        const stated = text => {
             const hit = text && text.match(LINES_CHANGED);
-            if (!hit) continue;
+            if (!hit) return null;
             const added = parseCount(hit[1]);
             const deleted = parseCount(hit[2]);
             return { added, deleted, changed: added + deleted, signed: true, known: true };
+        };
+        for (const text of headerLeaves(container, 40)) {
+            const counts = stated(text);
+            if (counts) return counts;
+        }
+        const header = headerOf(container) || container;
+        for (const el of header.querySelectorAll('[aria-label],[title]')) {
+            const counts = stated(el.getAttribute('aria-label')) || stated(el.getAttribute('title'));
+            if (counts) return counts;
         }
         return null;
     }
@@ -710,7 +755,12 @@
      */
     function commentLinesHidden(container) {
         const tally = container.querySelector(COMMENT_TALLY_SELECTOR);
-        if (tally && tally.hasAttribute('data-added') && tally.hasAttribute('data-deleted')) {
+        // No tally means that filter hid nothing here. Its wording is written
+        // into the tally, so with none there is nothing for a search of the
+        // header to find — and a file with no comment lines hidden in it is the
+        // common case, on every pass.
+        if (!tally) return { lines: 0, added: 0, deleted: 0, signed: true };
+        if (tally.hasAttribute('data-added') && tally.hasAttribute('data-deleted')) {
             const added = parseCount(tally.getAttribute('data-added'));
             const deleted = parseCount(tally.getAttribute('data-deleted'));
             return { lines: parseCount(tally.textContent) || added + deleted, added, deleted, signed: true };
@@ -1227,9 +1277,16 @@
         const fromId = el.id && el.id.match(ANCHOR_ID);
         if (fromId) return fromId[1].toLowerCase();
         if (!allowDescendantLink) return '';
+        // Tree rows carry their anchor in a link rather than an id, and the
+        // tree is read for paths, for diffstats and again to mirror verdicts
+        // into it. Held as long as the row's own text is, and dropped with it.
+        const cached = rowAnchors.get(el);
+        if (cached !== undefined) return cached;
         const link = el.querySelector('a[href*="#diff-"]');
         const inHref = link && (link.getAttribute('href') || '').match(/#(diff-[0-9a-f]{16,})/i);
-        return inHref ? inHref[1].toLowerCase() : '';
+        const anchor = inHref ? inHref[1].toLowerCase() : '';
+        if (anchor) rowAnchors.set(el, anchor);
+        return anchor;
     }
 
     function isDirectoryRow(row) {
@@ -1238,8 +1295,19 @@
         return !!row.querySelector(TREE_GROUP_SELECTOR);
     }
 
-    /** A row's own text, ignoring the text of any nested rows. */
+    /**
+     * A row's own text, ignoring the text of any nested rows.
+     *
+     * Held until the tree changes. A pass reads the tree for paths and for
+     * diffstats and then mirrors verdicts into it, which walked every row three
+     * times over; and GitHub fills the tree from the page navigation rather
+     * than from the diff bodies, so it stands still through the bursts in which
+     * the diff arrives. A row's diffstat arriving is a change to the tree, so
+     * this is dropped rather than frozen over it.
+     */
     function ownLeaves(row) {
+        const cached = rowLeaves.get(row);
+        if (cached) return cached;
         const out = [];
         const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT, {
             acceptNode(node) {
@@ -1253,6 +1321,7 @@
             const text = node.nodeValue.trim();
             if (text) out.push(text);
         }
+        rowLeaves.set(row, out);
         return out;
     }
 
@@ -1439,13 +1508,18 @@
         statHost = document.getElementById('diffstat');
         if (statHost) return statHost;
         for (const el of document.querySelectorAll('span,div,strong,em,p,h1,h2,h3')) {
-            if (el.children.length > 0 || el.closest(FILE_SELECTOR)) continue;
+            if (el.children.length > 0) continue;
             const text = (el.textContent || '').trim();
-            if (COMBINED_TOTAL.test(text)) {
+            const combined = COMBINED_TOTAL.test(text);
+            // Whether a leaf sits inside a file is asked only of the few that
+            // read like a total. There are 30,000 leaves on a large review and
+            // this runs on the first pass, the one the reader is waiting for.
+            if (!combined && !ADDED_TOTAL.test(text)) continue;
+            if (el.closest(FILE_SELECTOR)) continue;
+            if (combined) {
                 statHost = el.parentElement || el;
                 return statHost;
             }
-            if (!ADDED_TOTAL.test(text)) continue;
             const parent = el.parentElement;
             if (!parent) continue;
             for (const sibling of parent.children) {
@@ -1632,7 +1706,8 @@
 
     // ----------------------------------------------------------------- apply
 
-    function apply() {
+    function apply(options) {
+        const force = !!(options && options.force);
         // Turbo carries this instance across repositories; the preference has to
         // follow the repository on screen.
         if (activeScope !== repoScope()) {
@@ -1642,20 +1717,34 @@
             onlyChanged = readOnlyChanged();
             categories = readCategories();
             statHost = null;
+            pendingPage = true;
+            pendingTree = true;
+            knownContainers = null;
         }
         if (resolveScope !== pullRequestScope()) {
             resolveScope = pullRequestScope();
             resolveAttempts = 0;
         }
+        // Nothing has changed, so there is nothing to re-decide. Answered from
+        // what the observer reported rather than by reading the document, which
+        // is what a pass would otherwise spend most of itself on.
+        if (!force && !pendingPage && pendingFiles.size === 0) return;
+        const pageChanged = force || pendingPage;
+        const touched = pendingFiles;
+        pendingPage = false;
+        pendingFiles = new Set();
         countEpoch++;
-        const containers = fileContainers();
-        // Nothing has moved since the last pass and nothing is waiting to be
-        // classified, so re-deriving every verdict would buy nothing. Checked
-        // before the tree is read, which is itself most of a pass.
-        const signature = quickSignature(containers);
-        if (signature === lastSignature) return;
-        readTree();
-        threadHosts = findThreadHosts();
+        headerLeafCache = new WeakMap();
+        if (pendingTree) {
+            rowLeaves = new WeakMap();
+            rowAnchors = new WeakMap();
+        }
+        pendingTree = false;
+        // A file arriving, or being replaced, mutates the list that holds it,
+        // which is outside every file and so reported as a page change.
+        if (pageChanged || !knownContainers) knownContainers = fileContainers();
+        const containers = knownContainers;
+        if (pageChanged) readTree();
         // A pass over part of the diff must keep looking rather than conclude.
         let unresolved = Math.max(0, expectedFileCount() - containers.length);
         const incomplete = unresolved > 0;
@@ -1667,6 +1756,12 @@
                 if (state) clearFile(container);
                 continue;
             }
+            // Everything below reads the file itself, and a change inside a
+            // file is what puts it in `touched`. So a settled verdict on an
+            // untouched file is still the verdict this pass would reach. A pass
+            // asked for by hand re-examines every file, because whatever
+            // prompted it may not be visible from in here.
+            if (!force && settled(container, state) && !touched.has(container)) continue;
             // Feedback outranks tidiness: a collapsed stub is easy to scroll
             // past, and a review thread on a test file still has to be read.
             if (state === 'hidden' && hasReviewComments(container)) {
@@ -1762,36 +1857,28 @@
         renderPill(containers, incomplete);
         renderPopover(containers);
         diagnose(containers);
-        lastSignature = unresolved > 0 ? '' : quickSignature(containers);
-        threadHosts = null;
         scheduleResolve(unresolved);
     }
 
     /**
-     * Everything a pass would react to, cheap enough to compute on every one:
-     * how many files there are, how many are still undecided, how big the tree
-     * is, and the preferences in force. An unresolved file leaves the signature
-     * blank so the next pass always runs.
+     * Whether a file's verdict stands without reading the file again.
+     *
+     * A verdict is unsettled while anything it rests on is invisible to the
+     * observer: a path that could not be read yet or could not be keyed
+     * exactly, and GitHub's Viewed switch, which the reader flips while working
+     * and which lives in a checkbox's state rather than in any markup. What is
+     * left — a file hidden by its path, collapsed as unchanged, or held open
+     * for feedback — rests only on the file, and a change there is reported.
      */
-    function quickSignature(containers) {
-        let undecided = 0;
-        for (const container of containers) {
-            if (!container.getAttribute(STATE_ATTR)) undecided++;
-        }
-        return [containers.length, undecided, document.querySelectorAll(TREE_ITEM_SELECTOR).length,
-            // Live signals a pass reacts to and would otherwise skip: the reader
-            // ticking Viewed, and a review thread arriving after the diff did.
-            document.querySelectorAll('input[type="checkbox"]:checked').length,
-            document.querySelectorAll(REVIEW_COMMENT_SELECTOR).length,
-            // What this script put in the page and GitHub may have re-rendered
-            // away: the header figure, the stubs, the pill.
-            document.querySelector('.' + VISIBLE_STAT_CLASS) !== null,
-            document.querySelectorAll('.' + STUB_CLASS).length,
-            pill !== undefined && pill.isConnected,
-            verdicts.size, revealed.size, enabled, paused, onlyChanged, popoverOpen,
-            // Turbo carries one instance across pull requests, and a new one is
-            // a different diff even when it happens to be the same shape.
-            pullRequestScope()].join('|');
+    function settled(container, state) {
+        if (!state || state === 'pending') return false;
+        // A path read off a header that may still have been rendering is
+        // retried until it can be keyed exactly.
+        if (state === 'source') return container.__ghtfTrust === 'exact';
+        // A file hidden for having been viewed is the one verdict the reader
+        // reverses from outside this script, and unticking the box leaves no
+        // trace in the markup for a later pass to find.
+        return container.__ghtfCategory !== 'viewed';
     }
 
     /**
@@ -1809,7 +1896,7 @@
         }
         if (resolveAttempts >= RESOLVE_ATTEMPT_LIMIT) return;
         resolveAttempts++;
-        resolveTimer = setTimeout(apply, RESOLVE_RETRY_MS);
+        resolveTimer = setTimeout(() => apply({ force: true }), RESOLVE_RETRY_MS);
     }
 
     /**
@@ -1828,15 +1915,17 @@
             + ' that no diff container claimed — run __ghTestFileFilter.report()', missed.slice(0, 5));
     }
 
-    /** Re-sync the tree, the header summary and the pill after a manual reveal. */
+    /**
+     * Redraw now, for a change the observer cannot see: a file revealed by
+     * hand, or the header totals rendering after the diff. Runs the pass rather
+     * than a second copy of its drawing, which could disagree with it.
+     */
     function refreshChrome() {
-        countEpoch++;
-        const containers = fileContainers();
-        readTree();
-        applyTree(containers);
-        renderVisibleTotals(containers);
-        renderPill(containers, expectedFileCount() > containers.length);
+        pendingPage = true;
+        knownContainers = null;
+        apply({ force: true });
     }
+
 
     function reset() {
         verdicts.clear();
@@ -1848,7 +1937,10 @@
         statHost = null;
         totalsAttempts = 0;
         resolveAttempts = 0;
-        lastSignature = '';
+        pendingPage = true;
+        pendingTree = true;
+        pendingFiles = new Set();
+        knownContainers = null;
         clearTimeout(resolveTimer);
         const badge = document.querySelector('.' + VISIBLE_STAT_CLASS);
         if (badge) badge.remove();
@@ -1879,17 +1971,15 @@
     }
 
     /**
-     * Whether a batch of mutations touched anything that is not this
-     * extension's own UI. A pass writes pills, stubs and badges, and the
-     * observer sees those writes like any other; reacting to them schedules a
-     * pass whose writes schedule another, for as long as the page is open.
+     * Whether a mutation touched anything that is not this extension's own UI.
+     * A pass writes pills, stubs and badges, and the observer sees those writes
+     * like any other; reacting to them schedules a pass whose writes schedule
+     * another, for as long as the page is open.
      */
-    function foreign(records) {
-        for (const record of records) {
-            if (ownNode(record.target)) continue;
-            for (const node of record.addedNodes) if (!ownNode(node)) return true;
-            for (const node of record.removedNodes) if (!ownNode(node)) return true;
-        }
+    function foreign(record) {
+        if (ownNode(record.target)) return false;
+        for (const node of record.addedNodes) if (!ownNode(node)) return true;
+        for (const node of record.removedNodes) if (!ownNode(node)) return true;
         return false;
     }
 
@@ -1898,8 +1988,38 @@
         return !!(el && el.closest(`.${UI_CLASS}`));
     }
 
+    /**
+     * Where a mutation landed, which is what the next pass needs to know. A
+     * change inside one file can only change that file's verdict; a change
+     * anywhere else may have added a file, redrawn the tree, or replaced the
+     * header the totals are written into.
+     */
+    function markMutated(target, memo) {
+        const el = target && target.nodeType === 1 ? target : target && target.parentElement;
+        if (!el) return;
+        // A render burst arrives as many records against the same few targets.
+        if (el !== memo.target) {
+            memo.target = el;
+            memo.host = el.closest(FILE_SELECTOR);
+            memo.tree = memo.host ? false : !!el.closest(TREE_ITEM_SELECTOR);
+        }
+        if (memo.host) {
+            pendingFiles.add(memo.host);
+            return;
+        }
+        pendingPage = true;
+        if (memo.tree) pendingTree = true;
+    }
+
     function onMutations(records) {
-        if (foreign(records)) schedule();
+        const memo = { target: null, host: null, tree: false };
+        let acted = false;
+        for (const record of records) {
+            if (!foreign(record)) continue;
+            markMutated(record.target, memo);
+            acted = true;
+        }
+        if (acted) schedule();
     }
 
     function install() {
@@ -1911,9 +2031,19 @@
         });
         // The header figure takes the comment filter's lines off GitHub's
         // totals, and that filter's own writes are invisible to the observer.
+        // Scheduled rather than drawn here: that filter fires this on every
+        // pass of its own, and each one used to drag a pass of ours with it.
         document.addEventListener(STATE_EVENT, event => {
-            if (event.detail && event.detail.source === 'comments') refreshChrome();
+            if (!event.detail || event.detail.source !== 'comments') return;
+            pendingPage = true;
+            schedule();
         });
+        // GitHub's own Viewed switch is the reader's, and ticking it changes no
+        // markup: the box's state is a property, which no observer reports.
+        document.addEventListener('change', event => {
+            markMutated(event.target, { target: null, host: null, tree: false });
+            schedule();
+        }, true);
         document.dispatchEvent(new CustomEvent(SYNC_PULL));
         document.addEventListener('click', event => {
             if (!popoverOpen) return;
@@ -1926,13 +2056,22 @@
         // an observer holding the old one goes quiet for the rest of the visit,
         // which leaves every file GitHub appends afterwards unclassified.
         new MutationObserver(onMutations).observe(document.documentElement, { childList: true, subtree: true });
+        // A navigation replaces the page, so nothing the last pass read of it
+        // still holds.
         for (const event of ['turbo:load', 'turbo:render', 'pjax:end', 'popstate']) {
-            window.addEventListener(event, schedule);
+            window.addEventListener(event, () => {
+                pendingPage = true;
+                pendingTree = true;
+                knownContainers = null;
+                schedule();
+            });
         }
     }
 
     const api = {
-        apply,
+        version: VERSION,
+        /** Re-decide the diff now, whether or not anything has changed since the last pass. */
+        apply: () => apply({ force: true }),
         reset,
         get enabled() {
             return enabled;

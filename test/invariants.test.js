@@ -95,6 +95,15 @@ function violations(doc, api) {
 
     check('after the first pass');
 
+    // Nothing is opt-in: a reader who never opens the settings gets every
+    // filter, and a stored preference is the only thing that turns one off.
+    console.log('\n=== on until turned off ===');
+    ok(api.enabled === true, `hiding is on with nothing stored (got ${api.enabled})`);
+    ok(api.paused === false, `not paused with nothing stored (got ${api.paused})`);
+    ok(api.onlyChanged === true, `unchanged files are hidden too (got ${api.onlyChanged})`);
+    const off = Object.entries(api.categories).filter(([, on]) => !on).map(([name]) => name);
+    ok(off.length === 0, `every category is on (off: ${off.join(', ') || 'none'})`);
+
     api.peek(true);
     check('while peeking');
     api.peek(false);

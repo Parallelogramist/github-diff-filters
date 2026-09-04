@@ -113,7 +113,7 @@
 
     function render() {
         el('defaultEnabled').checked = valueOf(ENABLED_KEY, 'true') !== 'false';
-        el('onlyChanged').checked = valueOf(ONLY_CHANGED_KEY, 'false') === 'true';
+        el('onlyChanged').checked = valueOf(ONLY_CHANGED_KEY, 'true') !== 'false';
         let patterns = [];
         try {
             patterns = JSON.parse(valueOf(CUSTOM_RULES_KEY, '[]')) || [];
