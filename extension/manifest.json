@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
     "name": "GitHub diff filters",
-    "version": "1.14.0",
+    "version": "1.15.0",
     "description": "Hides test files, lockfiles, generated code and comment-only lines on GitHub pull request diffs, automatically.",
     "minimum_chrome_version": "111",
     "content_scripts": [
