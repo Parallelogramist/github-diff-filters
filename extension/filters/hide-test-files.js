@@ -22,7 +22,7 @@
      * there is no extension API to ask, so it carries the number and `build.sh`
      * checks it against the manifest.
      */
-    const VERSION = '1.20.1';
+    const VERSION = '1.21.0';
 
     const ENABLED_KEY = 'gh-hide-test-files:enabled';
     const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';
@@ -399,6 +399,14 @@
      * and anything drawing progress needs to tell those apart.
      */
     let sawMutations = false;
+    /**
+     * Whether the page is new since the last pass: on load, and after a
+     * navigation. Either way nobody asked, so the pass answers for the diff
+     * arriving — and without that it read as the reader's, since the observer
+     * has reported nothing yet, so a fresh diff announced itself finished and
+     * only said it was working once GitHub's next burst landed.
+     */
+    let freshPage = true;
     /** Whether the file tree itself changed, which is rarer than the diff doing so. */
     let pendingTree = true;
     let knownContainers = null;
@@ -1864,7 +1872,8 @@
         // A pass the reader asked for does not mean the diff is arriving. The
         // retry for a file whose header has not rendered does, so it says so
         // rather than being told apart from the reader's by its force flag.
-        const pageCaused = !!(options && options.page) || (sawMutations && !force);
+        const pageCaused = !!(options && options.page) || freshPage || (sawMutations && !force);
+        freshPage = false;
         pendingPage = false;
         pendingFiles = new Set();
         sawMutations = false;
@@ -2218,6 +2227,7 @@
         // still holds.
         for (const event of ['turbo:load', 'turbo:render', 'pjax:end', 'popstate']) {
             window.addEventListener(event, () => {
+                freshPage = true;
                 pendingPage = true;
                 pendingTree = true;
                 knownContainers = null;

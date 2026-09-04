@@ -27,16 +27,18 @@
     const PINNED_CLASS = 'ghdf-pinned';
     const FUNNEL = '<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>';
     const WORKING_TEXT = 'Applying filters\u2026';
-    const APPLIED_TEXT = 'Filters applied';
+    const DONE_TEXT = 'Done';
     /** How long the finished label stays before it goes; a label that never leaves stops being read. */
-    const APPLIED_MS = 10000;
-    /** The fade, in CSS and in the timer that hides the element after it. */
-    const FADE_MS = 600;
+    const APPLIED_MS = 5000;
+    /** How long the label takes to leave, in the CSS below and in the JS that drives it. */
+    const FADE_MS = 450;
+    /** One easing for everything the dock moves, so the parts read as one. */
+    const EASE = 'cubic-bezier(.4,0,.2,1)';
     const DOCK_CSS = `
 #${DOCK_ID}{position:fixed;right:16px;bottom:16px;z-index:2147483000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
 #${DOCK_ID} .ghdf-panel{display:none;flex-direction:column;align-items:flex-end;gap:6px;}
 #${DOCK_ID}:hover .ghdf-panel,#${DOCK_ID}:focus-within .ghdf-panel,#${DOCK_ID}.${PINNED_CLASS} .ghdf-panel{display:flex;}
-#${DOCK_ID} .ghdf-indicator{position:relative;display:inline-flex;align-items:center;gap:8px;margin:0;padding:6px 10px 6px 12px;border-radius:999px;border:1px solid var(--borderColor-default,#30363d);background:var(--bgColor-default,#0d1117);color:var(--fgColor-default,#e6edf3);font:600 12px/1 var(--fontStack-monospace,ui-monospace,SFMono-Regular,monospace);box-shadow:0 6px 20px rgba(0,0,0,.4);user-select:none;}
+#${DOCK_ID} .ghdf-indicator{position:relative;display:inline-flex;align-items:center;gap:0;margin:0;padding:6px 10px 6px 12px;transition:padding-left ${FADE_MS}ms ${EASE};border-radius:999px;border:1px solid var(--borderColor-default,#30363d);background:var(--bgColor-default,#0d1117);color:var(--fgColor-default,#e6edf3);font:600 12px/1 var(--fontStack-monospace,ui-monospace,SFMono-Regular,monospace);box-shadow:0 6px 20px rgba(0,0,0,.4);user-select:none;}
 #${DOCK_ID} .ghdf-indicator button{all:unset;display:inline-flex;align-items:center;font:inherit;color:inherit;line-height:1;cursor:pointer;}
 #${DOCK_ID} .ghdf-indicator button:focus-visible{outline:2px solid var(--focus-outlineColor,#1f6feb);outline-offset:3px;border-radius:2px;}
 /* Reaches past the button reset above, which sets color:inherit and is the more
@@ -48,9 +50,13 @@
 #${DOCK_ID} .ghdf-progress{position:absolute;left:12px;right:10px;bottom:3px;height:2px;border-radius:999px;background:var(--borderColor-muted,#30363d);overflow:hidden;opacity:0;transition:opacity .3s ease;pointer-events:none;}
 #${DOCK_ID} .ghdf-progress.ghdf-progress-on{opacity:1;}
 #${DOCK_ID} .ghdf-progress span{display:block;height:100%;width:0;border-radius:999px;background:var(--fgColor-accent,#388bfd);transition:width .18s ease;}
-#${DOCK_ID} .ghdf-state{white-space:nowrap;opacity:1;transition:opacity ${FADE_MS}ms ease;}
-#${DOCK_ID} .ghdf-state.ghdf-state-gone{opacity:0;}
-@media (prefers-reduced-motion:reduce){#${DOCK_ID} .ghdf-progress span,#${DOCK_ID} .ghdf-state{transition:none;}}
+/* Reaches past the same button reset. The width is animated from a measured
+   number rather than from the keyword auto, which no browser transitions, and
+   the margin goes with it so the pill closes around the icon in one movement. */
+#${DOCK_ID} .ghdf-indicator .ghdf-state{white-space:nowrap;overflow:hidden;opacity:1;margin-right:8px;transition:max-width ${FADE_MS}ms ${EASE},margin-right ${FADE_MS}ms ${EASE},opacity ${Math.round(FADE_MS * 0.6)}ms ease;}
+#${DOCK_ID} .ghdf-indicator .ghdf-state.ghdf-state-gone{opacity:0;margin-right:0;}
+#${DOCK_ID} .ghdf-indicator.ghdf-lean{padding-left:10px;}
+@media (prefers-reduced-motion:reduce){#${DOCK_ID} .ghdf-progress span,#${DOCK_ID} .ghdf-indicator,#${DOCK_ID} .ghdf-indicator .ghdf-state{transition:none;}}
 `;
 
     const DEFAULT_KEYS = { tests: 't', comments: 'c', next: 'j', previous: 'k' };
@@ -145,6 +151,10 @@
     const SETTLE_MS = 1200;
     let indicatorKey = '';
 
+    const nextFrame = typeof requestAnimationFrame === 'function'
+        ? callback => requestAnimationFrame(callback)
+        : callback => setTimeout(callback, 16);
+
     function ensureStyle() {
         if (document.getElementById(STYLE_ID)) return;
         const style = document.createElement('style');
@@ -212,6 +222,15 @@
             indicator.append(stateLabel, settings, progress);
             dock.append(panel, indicator);
             document.body.appendChild(dock);
+            // This script runs after both filters, so their first pass has
+            // already announced itself and been missed. If it said the diff
+            // was arriving, that work is in flight now: adopt it, or the
+            // control opens on "Done" and only goes back to working when
+            // GitHub's next burst lands.
+            if (['__ghTestFileFilter', '__ghCommentFilter']
+                .some(name => (summaryOf(name) || {}).arriving)) {
+                noteActivity();
+            }
         }
         for (const pill of pills) {
             if (pill.parentElement !== panel) panel.appendChild(pill);
@@ -322,15 +341,43 @@
         // the finished label has gone it stays gone until there is more work,
         // rather than coming back at every unrelated redraw.
         if (!active || (!loading && retired)) {
-            stateLabel.hidden = true;
+            closeState();
             return;
         }
-        stateLabel.classList.remove('ghdf-state-gone');
-        stateLabel.hidden = false;
-        const text = loading ? WORKING_TEXT : APPLIED_TEXT;
-        if (stateLabel.textContent !== text) stateLabel.textContent = text;
+        openState(loading ? WORKING_TEXT : DONE_TEXT);
         if (loading) return;
         appliedTimer = setTimeout(retireState, APPLIED_MS);
+    }
+
+    /**
+     * The label, at the width these particular words need.
+     *
+     * Kept a measured number rather than left to the text, because that width
+     * is animated and no browser transitions to or from `auto`: as a number it
+     * slides when the wording changes and closes when the label goes.
+     */
+    function openState(text) {
+        stateLabel.hidden = false;
+        if (stateLabel.textContent !== text) stateLabel.textContent = text;
+        stateLabel.classList.remove('ghdf-state-gone');
+        indicator.classList.remove('ghdf-lean');
+        stateLabel.style.maxWidth = `${stateLabel.scrollWidth}px`;
+    }
+
+    /** The label away, and the pill closed around the icon in the same movement. */
+    function closeState() {
+        if (stateLabel.hidden) return;
+        // From the width it has: a transition that starts at a guessed maximum
+        // stands still until the guess is reached.
+        stateLabel.style.maxWidth = `${stateLabel.scrollWidth}px`;
+        nextFrame(() => {
+            stateLabel.classList.add('ghdf-state-gone');
+            indicator.classList.add('ghdf-lean');
+            stateLabel.style.maxWidth = '0px';
+        });
+        // Out of the layout only once it has finished leaving it, so the pill
+        // does not jump at the end of its own animation.
+        appliedTimer = setTimeout(() => { stateLabel.hidden = true; }, FADE_MS + 60);
     }
 
     function retireState() {
@@ -340,13 +387,8 @@
             appliedTimer = setTimeout(retireState, APPLIED_MS);
             return;
         }
-        stateLabel.classList.add('ghdf-state-gone');
-        // Hidden only once it has faded, so the pill narrows to the icon in
-        // one movement rather than two.
-        appliedTimer = setTimeout(() => {
-            retired = true;
-            stateLabel.hidden = true;
-        }, FADE_MS);
+        retired = true;
+        closeState();
     }
 
     /**

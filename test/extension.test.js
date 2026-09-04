@@ -99,6 +99,17 @@ function loadContentScripts(window) {
     ok(!!doc.getElementById('ghtf-pill'), 'pill rendered');
     ok(!!doc.querySelector('.ghtf-visible-stat'), 'visible-count badge rendered');
 
+    // The page loading is not something the reader asked for, so the first
+    // pass over it answers for the diff arriving — and the corner control runs
+    // after both filters, so it has to adopt the announcement it was not yet
+    // listening for. Without either half a fresh diff opened on "Done" and
+    // only went back to working when GitHub's next burst landed, which is the
+    // words in the wrong order.
+    const opening = doc.querySelector('#ghdf-dock .ghdf-state');
+    ok(opening && opening.textContent === 'Applying filters\u2026' && !opening.hidden,
+        `a diff still loading reads as working, not as finished (got "`
+        + `${opening && opening.textContent}")`);
+
     console.log('\n-- both pills read the same way, with the action spelled out --');
     await sleep(300);
     const testPill = doc.getElementById('ghtf-pill');
@@ -170,8 +181,8 @@ function loadContentScripts(window) {
         && !bar.classList.contains('ghdf-progress-on'),
         `a progress bar is present and quiet on a diff that has fully arrived`
         + ` (${bar ? bar.className : 'missing'})`);
-    ok(stateLabel && /^Filters applied$/.test(stateLabel.textContent) && !stateLabel.hidden,
-        `the label says the filters are applied once they are (got "${stateLabel && stateLabel.textContent}")`);
+    ok(stateLabel && /^Done$/.test(stateLabel.textContent) && !stateLabel.hidden,
+        `the label says so once they are (got "${stateLabel && stateLabel.textContent}")`);
     ok(tests.hidden === 1 && comments.hiddenLines > 0, 'and there was something to apply them to');
     ok(!!settings.querySelector('svg') && indicator.classList.contains('ghdf-active'),
         'the funnel marks the filters as in force');
@@ -185,10 +196,16 @@ function loadContentScripts(window) {
         `the figures are still spoken, now that they are not written (got: ${stateLabel.getAttribute('aria-label')})`);
     // The finished label goes on its own. Its two timers are the ten seconds
     // it stands for and the fade after it, so both have to pass.
+    // Its own transition has to out-specify the `all:unset` button reset in the
+    // same sheet, or it is declared and never applied — which is how the text
+    // came to vanish in one frame while reading as a fade in the source.
+    const moves = dom.window.getComputedStyle(stateLabel).transition || '';
+    ok(/max-width 450ms/.test(moves) && /opacity/.test(moves),
+        `it really does transition, reset and all (got "${moves}")`);
     const fadeCss = (doc.getElementById('ghdf-dock-style') || {}).textContent || '';
-    ok(/\.ghdf-state\{[^}]*transition:opacity 600ms/.test(fadeCss)
-        && /\.ghdf-state\.ghdf-state-gone\{opacity:0/.test(fadeCss),
-        'it goes by fading rather than by vanishing');
+    ok(/\.ghdf-indicator \.ghdf-state\{[^}]*transition:max-width 450ms/.test(fadeCss)
+        && /\.ghdf-state\.ghdf-state-gone\{opacity:0;margin-right:0/.test(fadeCss),
+        'and it closes its width and its margin alongside the fade');
     const css = (doc.getElementById('ghdf-dock-style') || {}).textContent || '';
     ok(/\.ghdf-panel\{display:none/.test(css) && /#ghdf-dock:hover \.ghdf-panel/.test(css)
         && /#ghdf-dock:focus-within \.ghdf-panel/.test(css),
@@ -229,7 +246,9 @@ function loadContentScripts(window) {
     // With both filters off there is nothing to report and nothing in force.
     dom.window.__ghTestFileFilter.enabled = false;
     dom.window.__ghCommentFilter.enabled = false;
-    await sleep(50);
+    // Long enough for the label to finish closing: it leaves the layout only
+    // once it has animated out of it.
+    await sleep(650);
     ok(stateLabel.hidden && !indicator.classList.contains('ghdf-active'),
         `no filter active leaves a grey funnel and no label (got hidden=${stateLabel.hidden},`
         + ` class="${indicator.className}")`);
@@ -361,7 +380,7 @@ function loadContentScripts(window) {
     ok(announced === 0 && !loading.classList.contains('ghdf-progress-on'),
         `churn inside a decided file starts nothing (${announced} announcements,`
         + ` bar "${loading.className}")`);
-    ok(label0().textContent === 'Filters applied',
+    ok(label0().textContent === 'Done',
         `and the label still reads as finished (got "${label0().textContent}")`);
     doc.removeEventListener('ghdf:state', countArriving);
 
@@ -398,13 +417,13 @@ function loadContentScripts(window) {
     ok(label.textContent === 'Applying filters\u2026',
         `and it stays for as long as that lasts (got "${label.textContent}")`);
     await sleep(1600);
-    ok(label.textContent === 'Filters applied' && !label.hidden
+    ok(label.textContent === 'Done' && !label.hidden
         && !label.classList.contains('ghdf-state-gone'),
         `then says so once the work stops (got "${label.textContent}", `
         + `class "${label.className}")`);
-    // Ten seconds of standing, then the fade. Worth the wait in the suite:
+    // Five seconds of standing, then the fade. Worth the wait in the suite:
     // this is the whole of what the reader was promised would happen.
-    await sleep(10000 + 600 + 300);
+    await sleep(5000 + 450 + 300);
     ok(label.hidden, `and goes on its own once it has been read (class "${label.className}")`);
     // Gone means gone: a redraw for some unrelated reason must not bring the
     // finished label back on a page where nothing more has happened.
@@ -418,6 +437,29 @@ function loadContentScripts(window) {
     await sleep(450);
     ok(!label.hidden && label.textContent === 'Applying filters\u2026',
         `while more work brings it back (got "${label.textContent}", hidden=${label.hidden})`);
+
+    // How a real page load goes, which the run above cannot reproduce: it
+    // navigates into the diff after the scripts are in place, so the corner
+    // control is already listening. In Chrome the diff is there first,
+    // bootstrap starts both filters where it stands, and their first pass is
+    // announced before controls.js has been evaluated at all.
+    console.log('\n=== loaded straight onto a diff, in manifest order ===');
+    const cold = new JSDOM(`<!doctype html><html><body>${DIFF_HTML}</body></html>`,
+        { url: 'https://github.com/acme/repo/pull/9/files', runScripts: 'outside-only' });
+    if (cold.window.document.readyState !== 'complete') {
+        await new Promise(r => cold.window.addEventListener('load', r, { once: true }));
+    }
+    loadContentScripts(cold.window);
+    await sleep(500);
+    const coldLabel = cold.window.document.querySelector('#ghdf-dock .ghdf-state');
+    ok(!!coldLabel, 'the control is there');
+    ok(coldLabel && coldLabel.textContent === 'Applying filters\u2026' && !coldLabel.hidden,
+        `and reads as working, though it missed the announcement (got "`
+        + `${coldLabel && coldLabel.textContent}")`);
+    await sleep(1600);
+    ok(coldLabel && coldLabel.textContent === 'Done',
+        `then finishes on its own (got "${coldLabel && coldLabel.textContent}")`);
+    cold.window.close();
 
     console.log('\n' + (failures === 0 ? 'ALL EXTENSION ASSERTIONS PASS' : failures + ' EXTENSION FAILURES'));
     process.exit(failures ? 1 : 0);
