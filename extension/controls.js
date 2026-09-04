@@ -36,6 +36,8 @@
     const EASE = 'cubic-bezier(.4,0,.2,1)';
     const DOCK_CSS = `
 #${DOCK_ID}{position:fixed;right:16px;bottom:16px;z-index:2147483000;display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
+/* Beats the display above, which the hidden attribute alone does not. */
+#${DOCK_ID}[hidden]{display:none;}
 #${DOCK_ID} .ghdf-panel{display:none;flex-direction:column;align-items:flex-end;gap:6px;}
 #${DOCK_ID}:hover .ghdf-panel,#${DOCK_ID}:focus-within .ghdf-panel,#${DOCK_ID}.${PINNED_CLASS} .ghdf-panel{display:flex;}
 #${DOCK_ID} .ghdf-indicator{position:relative;display:inline-flex;align-items:center;gap:0;margin:0;padding:6px 10px 6px 12px;transition:padding-left ${FADE_MS}ms ${EASE};border-radius:999px;border:1px solid var(--borderColor-default,#30363d);background:var(--bgColor-default,#0d1117);color:var(--fgColor-default,#e6edf3);font:600 12px/1 var(--fontStack-monospace,ui-monospace,SFMono-Regular,monospace);box-shadow:0 6px 20px rgba(0,0,0,.4);user-select:none;}
@@ -180,6 +182,17 @@
     }
 
     function ensureDock() {
+        // The filters stay installed across a Turbo navigation on purpose, so
+        // they catch the reader coming back to the diff — which means this is
+        // reached on pages with no diff on them, a pull request's Conversation
+        // tab among them. The pills hide themselves when they have nothing to
+        // report; the control has to do the same, because one reading
+        // "Working" over a page it is not filtering is worse than none.
+        if (!onDiffScreen()) {
+            if (dock) dock.hidden = true;
+            rest();
+            return;
+        }
         const pills = PILL_IDS.map(id => document.getElementById(id)).filter(Boolean);
         if (pills.length === 0) return;
         ensureStyle();
@@ -232,6 +245,7 @@
                 noteActivity();
             }
         }
+        dock.hidden = false;
         for (const pill of pills) {
             if (pill.parentElement !== panel) panel.appendChild(pill);
             // The pills each placed themselves before there was a dock.
@@ -278,6 +292,17 @@
             renderProgress(false, drawn.arrived, drawn.expected);
             renderState(false, drawn.active);
         }, SETTLE_MS);
+    }
+
+    /** Nothing here is being filtered, so nothing here is in flight. */
+    function rest() {
+        clearTimeout(activityTimer);
+        clearTimeout(appliedTimer);
+        clearInterval(tick);
+        tick = null;
+        busy = false;
+        startedAt = 0;
+        reached = 0;
     }
 
     /**
@@ -477,6 +502,12 @@
     document.addEventListener('keydown', onKeyDown, true);
     // A filter announces each change to its pill, including a pill it had to
     // put back after a navigation replaced body.
+    // Whether this is a diff is the URL's to say, so the control asks it when
+    // the URL changes rather than waiting for a filter to announce something.
+    for (const event of ['turbo:load', 'turbo:render', 'pjax:end', 'popstate']) {
+        window.addEventListener(event, ensureDock);
+    }
+
     document.addEventListener(STATE_EVENT, event => {
         const detail = event.detail || {};
         // Only the page filling the diff in starts the work. Switching a

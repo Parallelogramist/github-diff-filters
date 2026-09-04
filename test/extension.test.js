@@ -459,6 +459,37 @@ function loadContentScripts(window) {
     ok(!label.hidden && label.textContent === 'Working\u2026',
         `while more work brings it back (got "${label.textContent}", hidden=${label.hidden})`);
 
+    // The filters stay installed across a Turbo navigation on purpose, so they
+    // catch the reader coming back to the diff. That means everything here can
+    // be reached on a page with no diff on it, and a control reporting on a
+    // page it is not filtering is worse than no control at all.
+    console.log('\n=== navigated off the diff ===');
+    dom.reconfigure({ url: 'https://github.com/acme/repo/pull/7' });
+    dom.window.dispatchEvent(new dom.window.Event('turbo:load'));
+    await sleep(500);
+    const away = doc.getElementById('ghdf-dock');
+    // No offsetParent test here: jsdom does no layout, so that reads as hidden
+    // whatever the page says.
+    ok(!away || away.hidden || !away.isConnected,
+        `the control is not on a page with no diff (hidden=${away && away.hidden},`
+        + ` connected=${away && away.isConnected})`);
+    // Only the URL moved here: the diff's markup is still in the body, which is
+    // the harder case. The URL is what says whether this is a diff, so the
+    // control goes whether or not there is markup left to filter.
+    ok(dom.window.__ghTestFileFilter.summary().files > 0,
+        `even with the diff's markup still there (${dom.window.__ghTestFileFilter.summary().files} files)`);
+    const awayCss = (doc.getElementById('ghdf-dock-style') || {}).textContent || '';
+    ok(/#ghdf-dock\[hidden\]\{display:none/.test(awayCss),
+        'and it is hidden by a rule that beats the dock its own display');
+    // Back to the diff, and it comes back with it.
+    dom.reconfigure({ url: 'https://github.com/acme/repo/pull/7/files' });
+    dom.window.document.body.innerHTML = DIFF_HTML;
+    dom.window.dispatchEvent(new dom.window.Event('turbo:load'));
+    await sleep(600);
+    const back = doc.getElementById('ghdf-dock');
+    ok(back && !back.hidden && back.isConnected,
+        `and it returns with the diff (hidden=${back && back.hidden})`);
+
     // How a real page load goes, which the run above cannot reproduce: it
     // navigates into the diff after the scripts are in place, so the corner
     // control is already listening. In Chrome the diff is there first,
