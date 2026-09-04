@@ -240,8 +240,13 @@
         return scope ? `${ONLY_CHANGED_KEY}:${scope}` : ONLY_CHANGED_KEY;
     }
 
+    /**
+     * Off unless asked for. This one hides files by what the reader has already
+     * seen rather than by what the files are, so on a second visit to a diff it
+     * collapses nearly all of it — which has to be a choice.
+     */
     function readOnlyChanged() {
-        return localStorage.getItem(onlyChangedKey()) !== 'false';
+        return localStorage.getItem(onlyChangedKey()) === 'true';
     }
 
     function pausedKey() {
@@ -1152,6 +1157,12 @@
             popover.append(popoverRow(CATEGORY_LABELS[name] || name, categories[name] !== false,
                 checked => { api.setCategory(name, checked); }, counts.get(name) || 0, false));
         }
+        // Listed here so it is switched on deliberately and switched off in the
+        // same place, rather than being a setting that collapses a diff from
+        // somewhere the reader cannot see.
+        popover.append(popoverRow('Unchanged since your last visit', onlyChanged,
+            checked => { api.onlyChanged = checked; },
+            containers.filter(c => c.getAttribute(STATE_ATTR) === 'unchanged').length, false));
         const help = window.__ghDiffFilterShortcuts;
         if (Array.isArray(help) && help.length > 0) popover.append(shortcutList(help));
     }
@@ -2038,6 +2049,8 @@
         // GitHub's own Viewed switch is the reader's, and ticking it changes no
         // markup: the box's state is a property, which no observer reports.
         document.addEventListener('change', event => {
+            // Our own controls act through the api, which runs its own pass.
+            if (ownNode(event.target)) return;
             markMutated(event.target, { target: null, host: null, tree: false });
             schedule();
         }, true);

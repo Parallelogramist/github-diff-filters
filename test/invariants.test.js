@@ -100,7 +100,11 @@ function violations(doc, api) {
     console.log('\n=== on until turned off ===');
     ok(api.enabled === true, `hiding is on with nothing stored (got ${api.enabled})`);
     ok(api.paused === false, `not paused with nothing stored (got ${api.paused})`);
-    ok(api.onlyChanged === true, `unchanged files are hidden too (got ${api.onlyChanged})`);
+    // The one filter that is opt-in, because it hides files by what the reader
+    // has already seen: on a second visit it would collapse nearly the whole
+    // diff, so it waits to be asked from the settings menu.
+    ok(api.onlyChanged === false,
+        `unchanged-since-your-last-visit waits to be asked (got ${api.onlyChanged})`);
     const off = Object.entries(api.categories).filter(([, on]) => !on).map(([name]) => name);
     ok(off.length === 0, `every category is on (off: ${off.join(', ') || 'none'})`);
 
