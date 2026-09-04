@@ -120,8 +120,15 @@
     let doneTimer;
     let activityTimer;
     let busy = false;
-    /** How long after the last pass the filters are taken to be finished. */
-    const SETTLE_MS = 700;
+    /** The last progress the indicator drew, so the settle can finish it alone. */
+    let drawn = { arrived: 0, expected: 0 };
+    /**
+     * How long after the last pass the filters are taken to be finished.
+     * Measured on a 129-file review: GitHub's rendering bursts leave gaps of
+     * well under a second, and a shorter settle than this reported the work
+     * finished two or three times over during one load.
+     */
+    const SETTLE_MS = 1200;
     let indicatorKey = '';
 
     function ensureStyle() {
@@ -223,8 +230,10 @@
         clearTimeout(activityTimer);
         activityTimer = setTimeout(() => {
             busy = false;
-            indicatorKey = '';
-            renderIndicator();
+            // Only the bar has anything to say when the work stops. Rewriting
+            // the rest would be a write into a page that has gone quiet, which
+            // is the thing every observer here is built to avoid.
+            renderProgress(false, drawn.arrived, drawn.expected);
         }, SETTLE_MS);
     }
 
@@ -250,6 +259,7 @@
         // The categories belong to the test-file filter; without it there is nothing to open.
         settings.hidden = !filter;
         settings.setAttribute('aria-expanded', String(settingsOpen));
+        drawn = { arrived, expected };
         renderProgress(loading, arrived, expected);
     }
 

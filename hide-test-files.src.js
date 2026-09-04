@@ -19,7 +19,7 @@
      * there is no extension API to ask, so it carries the number and `build.sh`
      * checks it against the manifest.
      */
-    const VERSION = '1.18.0';
+    const VERSION = '1.18.1';
 
     const ENABLED_KEY = 'gh-hide-test-files:enabled';
     const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';

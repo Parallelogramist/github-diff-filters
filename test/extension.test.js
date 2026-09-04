@@ -164,7 +164,7 @@ function loadContentScripts(window) {
         'shorthand on the left, funnel on the right, no other control');
     // The filters announce every pass and the bar follows, so "quiet" is only
     // true once they have stopped, filled to the end and faded back out.
-    await sleep(1800);
+    await sleep(2400);
     const bar = indicator.querySelector('.ghdf-progress');
     ok(!!bar && bar.getAttribute('role') === 'progressbar'
         && !bar.classList.contains('ghdf-progress-on'),
@@ -290,7 +290,7 @@ function loadContentScripts(window) {
         `the summary says how many the page is still expecting (${state.files} of ${state.expected})`);
     nav.remove();
     dom.window.__ghTestFileFilter.apply();
-    await sleep(900);
+    await sleep(1500);
     ok(loading.getAttribute('aria-valuenow') === '100',
         `it fills to the end when the diff is complete (got ${loading.getAttribute('aria-valuenow')})`);
 
