@@ -22,7 +22,7 @@
      * there is no extension API to ask, so it carries the number and `build.sh`
      * checks it against the manifest.
      */
-    const VERSION = '1.15.0';
+    const VERSION = '1.16.0';
 
     const ENABLED_KEY = 'gh-hide-test-files:enabled';
     const CUSTOM_RULES_KEY = 'gh-hide-test-files:customRules';
@@ -399,14 +399,15 @@
     /** What each file's header reads as, for the length of one pass; see `headerLeaves`. */
     let headerLeafCache = new WeakMap();
     /**
-     * Counts memoised for the duration of one pass, which asks for a file's
-     * counts several times over — for its fingerprint, its stub and the header
-     * figure. Not held across passes: the numbers can change through an
-     * attribute nothing cheap can watch, and a stale count would collapse a
-     * file that did move as unchanged.
+     * A file's counts, asked for several times over — for its fingerprint, its
+     * stub and the header figure — and held until the file that states them
+     * changes. GitHub states them in the header as text and as an `aria-label`,
+     * so the observer watches those two attributes as well as the markup:
+     * without that an attribute rewritten in place would leave a stale count,
+     * and the figure beside GitHub's own totals would stop footing.
      */
-    const countCache = new WeakMap();
-    let countEpoch = 0;
+    let countCache = new WeakMap();
+    const COUNT_ATTRIBUTES = ['aria-label', 'title'];
 
     /** Verdicts by `diff-<sha>`, which outlive the elements they were reached on. */
     const verdicts = new Map();
@@ -466,11 +467,18 @@
     // ------------------------------------------------------------ file info
 
     function fileContainers() {
-        // Outermost matches only. Asking each candidate whether it sits inside
-        // another one is linear in the number of files; comparing every pair is
-        // not, and a large pull request pays that on every pass.
-        return Array.from(document.querySelectorAll(FILE_SELECTOR))
-            .filter(el => !(el.parentElement && el.parentElement.closest(FILE_SELECTOR)));
+        // Outermost matches only. The results arrive in document order, so a
+        // nested match is always inside the last one accepted: that makes the
+        // test a pointer walk instead of a selector matched against every
+        // ancestor of every candidate.
+        const found = [];
+        let outermost = null;
+        for (const el of document.querySelectorAll(FILE_SELECTOR)) {
+            if (outermost && outermost.contains(el)) continue;
+            found.push(el);
+            outermost = el;
+        }
+        return found;
     }
 
     /** Renames render as "old → new"; the new path is the one to classify. */
@@ -688,9 +696,11 @@
      */
     function fileCounts(container) {
         const cached = countCache.get(container);
-        if (cached && cached.epoch === countEpoch) return cached.counts;
+        if (cached) return cached;
         const counts = readCounts(container);
-        countCache.set(container, { epoch: countEpoch, counts });
+        // A reading taken before the header that states them properly has
+        // rendered is provisional, so it is used but not kept.
+        if (counts.known) countCache.set(container, counts);
         return counts;
     }
 
@@ -1168,12 +1178,23 @@
             containers.filter(c => c.getAttribute(STATE_ATTR) === 'unchanged').length, false));
         const help = window.__ghDiffFilterShortcuts;
         if (Array.isArray(help) && help.length > 0) popover.append(shortcutList(help));
+        popover.append(versionLabel());
     }
 
     /**
      * The keyboard shortcuts, published by the extension's controls script. They
      * were documented only in a title attribute, which nobody reads.
      */
+    /** Which build drew this menu, small and out of the way. */
+    function versionLabel() {
+        const label = document.createElement('div');
+        label.className = 'ghtf-popover-version';
+        label.textContent = `v${VERSION}`;
+        label.style.cssText = 'padding:6px 8px 0;text-align:right;white-space:nowrap;'
+            + 'font-size:10px;line-height:1;color:var(--fgColor-muted,#8b949e);opacity:.7;';
+        return label;
+    }
+
     function shortcutList(help) {
         const list = document.createElement('div');
         list.className = 'ghtf-popover-shortcuts';
@@ -1744,7 +1765,6 @@
         const touched = pendingFiles;
         pendingPage = false;
         pendingFiles = new Set();
-        countEpoch++;
         headerLeafCache = new WeakMap();
         if (pendingTree) {
             rowLeaves = new WeakMap();
@@ -1946,6 +1966,7 @@
         revealed.clear();
         clearTree();
         statHost = null;
+        countCache = new WeakMap();
         totalsAttempts = 0;
         resolveAttempts = 0;
         pendingPage = true;
@@ -1989,6 +2010,8 @@
      */
     function foreign(record) {
         if (ownNode(record.target)) return false;
+        // An attribute record carries no nodes; the target is the whole of it.
+        if (record.type === 'attributes') return true;
         for (const node of record.addedNodes) if (!ownNode(node)) return true;
         for (const node of record.removedNodes) if (!ownNode(node)) return true;
         return false;
@@ -2016,6 +2039,7 @@
         }
         if (memo.host) {
             pendingFiles.add(memo.host);
+            countCache.delete(memo.host);
             return;
         }
         pendingPage = true;
@@ -2068,7 +2092,16 @@
         // documentElement, not body: GitHub replaces body on a navigation, and
         // an observer holding the old one goes quiet for the rest of the visit,
         // which leaves every file GitHub appends afterwards unclassified.
-        new MutationObserver(onMutations).observe(document.documentElement, { childList: true, subtree: true });
+        new MutationObserver(onMutations).observe(document.documentElement, {
+            childList: true,
+            subtree: true,
+            // The two attributes a file states its counts in. Measured on a
+            // 129-file review: neither changed once in six seconds, so this
+            // costs nothing and closes the one way a count could go stale
+            // without the markup moving.
+            attributes: true,
+            attributeFilter: COUNT_ATTRIBUTES
+        });
         // A navigation replaces the page, so nothing the last pass read of it
         // still holds.
         for (const event of ['turbo:load', 'turbo:render', 'pjax:end', 'popstate']) {

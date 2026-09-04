@@ -75,6 +75,16 @@ const html = `<!doctype html><html><body>
     ok(api.categories.lockfile === false, 'the choice is persisted like any other');
     ok(!!doc.getElementById('ghtf-popover'), 'the popover stays open across the change');
 
+    // The build that drew the menu, so a reader looking at stale behaviour can
+    // tell whether they are looking at a stale script.
+    const stamp = doc.querySelector('.ghtf-popover-version');
+    const manifest = require('../extension/manifest.json');
+    ok(!!stamp && stamp.textContent === `v${manifest.version}`,
+        `the menu names its own build (got ${stamp ? stamp.textContent : 'no label'},`
+        + ` manifest says v${manifest.version})`);
+    ok(!!stamp && stamp.style.textAlign === 'right',
+        'the version sits in the corner rather than in the list');
+
     console.log('\n=== the repository row is the stored preference ===');
     const repoBox = rowFor('acme/repo').querySelector('input');
     repoBox.checked = false;
