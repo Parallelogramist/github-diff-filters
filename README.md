@@ -20,8 +20,11 @@ previous visit, which is what a re-review after a fix round actually needs.
 
 ![Both filters running on a pull request](docs/pills.png)
 
-Each filter puts a pill in the bottom-right corner stating what it hid and what
-clicking does. The choice persists per browser.
+The extension keeps one control in the bottom-right corner: `files:lines` — how
+many files and how many comment-only lines are hidden — beside an icon that is
+lit while the filters are in force. Hover or focus it and it expands to the two
+pills, each stating what it hid and what clicking does; a click on the icon pins
+them open. The choice persists per browser.
 
 ![Test files collapsed to one-line stubs](docs/collapsed-test-files.png)
 
@@ -81,7 +84,9 @@ __ghTestFileFilter.addRule('/legacy-checks/')
 
 | Member | Purpose |
 | --- | --- |
-| `enabled` | Get/set hiding; persisted |
+| `enabled` | Get/set the repository's stored preference |
+| `hiding` | Whether files are hidden right now, preference and peek together |
+| `peek(on)` | Show the hidden files for this pull request without changing the preference |
 | `debug()` | Table of every file with its path, matched rule, state and diffstat |
 | `rules` | The active rule list |
 | `addRule(pattern)` | Persist an extra path pattern |
@@ -91,13 +96,25 @@ __ghTestFileFilter.addRule('/legacy-checks/')
 | `defaultEnabled` | The setting for repositories with no preference of their own |
 | `repo` / `clearRepoPreference()` | The current scope, and handing it back to the default |
 | `onlyChanged` | Collapse files identical to your previous visit to this PR |
-| `categories` / `setCategory(name, on)` | Which kinds of noise hide: test, snapshot, lockfile, generated, vendored, data |
+| `categories` / `setCategory(name, on)` | Which kinds of noise hide: test, snapshot, lockfile,
+generated, vendored, data, rename, mode, binary, viewed |
 | `report()` | Dump what the path and count probes actually saw, for a markup change |
 
 Preferences resolve per repository with a global fallback, so switching tests
-back on for one repo leaves the rest alone.
+back on for one repo leaves the rest alone, and they follow your Chrome profile
+between machines. Nothing here needs the console: the gear on the pill opens the
+same controls, and the extension has an options page.
 
-If a pill reads `⚠ N unread`, it matched N file containers but could not read
+Clicking the pill, or pressing `t`, is a **peek** — it shows the hidden files
+for this pull request and leaves the repository's setting alone. Only the
+popover, the options page or `enabled` change what happens next time.
+
+`window.__ghCommentFilter` carries the same `enabled` / `hiding` / `peek()` /
+`apply()` / `reset()` / `debug(needle)` surface for comment-only lines, and
+`window.__ghDiffFilterControls` exposes `keys`, `setKey(action, key)`, `enabled`
+and `help()` for the keyboard shortcuts.
+
+If the pill warns `N unread`, it matched N file containers but could not read
 their paths — GitHub's markup moved, and `debug()` says which files.
 
 ## Why the header sometimes says "lines" instead of "+X −Y"
@@ -131,7 +148,8 @@ npm run package # build, then zip for sharing and for the Web Store
 Edit `hide-test-files.src.js`. `extension/filters/*.js` and the `.min.js` /
 `.bookmarklet.txt` artifacts are build output.
 
-The extension ships the **readable** source rather than the minified build:
+The extension ships the **readable** source of both filters rather than the
+minified builds:
 the Chrome Web Store rejects obfuscated code, and reviewers read what ships.
 Minification exists only to fit the bookmarklet into a URL.
 
@@ -140,11 +158,6 @@ filter behaviour was checked against live public pull requests —
 `vercel/next.js#98217` (86 files: 54 hidden, 32 kept, 89 of 141 tree rows
 hidden, header figure matching the number computed from the GitHub API) and
 `facebook/react#37516`.
-
-## `hide-comment-diffs` provenance
-
-`hide-comment-diffs.min.js` is vendored as a prebuilt script; its readable
-source is not in this repository. Everything else here is source-first.
 
 ## License
 

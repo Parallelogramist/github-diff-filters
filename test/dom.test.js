@@ -82,7 +82,7 @@ const html = `<!doctype html><html><body><div id="files">
     console.log('\n-- pill --');
     const pill = doc.getElementById('ghtf-pill');
     ok(!!pill, 'pill rendered');
-    ok(/3 test files hidden/.test(pill.textContent), 'pill counts 3 hidden (got: ' + pill.textContent + ')');
+    ok(/3 files hidden/.test(pill.textContent), 'pill counts 3 hidden (got: ' + pill.textContent + ')');
     ok(pill.style.bottom === '16px', 'pill at bottom:16px with no comment-filter pill');
 
     console.log('\n-- pill stacks above the comment-filter pill --');
@@ -102,7 +102,7 @@ const html = `<!doctype html><html><body><div id="files">
     ok(spec.getAttribute('data-ghtf') === 'shown', 'clicked file marked shown');
     ok(spec.style.display === '', 'clicked file visible again');
     ok(!doc.body.contains(stub), 'stub removed');
-    ok(/2 test files hidden/.test(doc.getElementById('ghtf-pill').textContent), 'pill recounts to 2 (got: ' + doc.getElementById('ghtf-pill').textContent + ')');
+    ok(/2 files hidden/.test(doc.getElementById('ghtf-pill').textContent), 'pill recounts to 2 (got: ' + doc.getElementById('ghtf-pill').textContent + ')');
 
     console.log('\n-- a reprocess must not re-hide a manually revealed file --');
     api.apply();
@@ -119,19 +119,22 @@ const html = `<!doctype html><html><body><div id="files">
     ok(doc.querySelectorAll('.ghtf-stub').length === 3, 'stub count back to 3');
 
     console.log('\n-- a mutation arriving mid-write is deferred, not dropped --');
-    api.apply();                                       // suppressObserver is true for this task
+    api.apply();                                       // a pass has just written; the observer must not swallow what follows
     const holder3 = doc.createElement('div');
     holder3.innerHTML = oldUiFile('api/test_views.py', 3, 0);
     doc.getElementById('files').appendChild(holder3.firstElementChild);
     await sleep(900);
-    ok(state('api/test_views.py').getAttribute('data-ghtf') === 'hidden', 'file appended during suppression still gets hidden');
+    ok(state('api/test_views.py').getAttribute('data-ghtf') === 'hidden', 'file appended right after a pass still gets hidden');
 
     console.log('\n-- toggle off --');
     api.enabled = false;
     ok(doc.querySelectorAll('.ghtf-stub').length === 0, 'all stubs removed when disabled');
     ok(!goTest.hasAttribute('data-ghtf'), 'state attribute cleared when disabled');
     ok(goTest.style.display === '', 'test file visible when disabled');
-    ok(/Test files shown/.test(doc.getElementById('ghtf-pill').textContent), 'pill offers to re-hide');
+    ok(/Hiding off for this repo/.test(doc.getElementById('ghtf-pill').textContent),
+        'pill names the stored repo preference rather than implying an empty diff');
+    ok(/Turn on/.test(doc.getElementById('ghtf-pill').textContent), 'pill offers to turn hiding back on');
+
     // The pill writes the repository on screen, not the global default.
     ok(window.localStorage.getItem('gh-hide-test-files:enabled:acme/repo') === 'false',
         'disabled state persisted against this repository');
@@ -141,6 +144,17 @@ const html = `<!doctype html><html><body><div id="files">
     ok(doc.querySelectorAll('.ghtf-stub').length === 5, 'all 5 test files hidden again (got ' + doc.querySelectorAll('.ghtf-stub').length + ')');
     ok(window.localStorage.getItem('gh-hide-test-files:enabled:acme/repo') === 'true',
         'enabled state persisted against this repository');
+
+    console.log('\n-- a peek shows the files without touching the stored preference --');
+    api.enabled = true;
+    api.peek(true);
+    ok(api.enabled === true && api.paused === true, 'the preference stays on while the peek is in force');
+    ok(doc.querySelectorAll('.ghtf-stub').length === 0, 'a peek reveals every hidden file');
+    ok(window.localStorage.getItem('gh-hide-test-files:enabled:acme/repo') !== 'false',
+        'a peek writes no repo preference');
+    ok(/files shown/.test(doc.getElementById('ghtf-pill').textContent), 'pill offers to re-hide');
+    api.peek(false);
+    ok(doc.querySelectorAll('.ghtf-stub').length > 0, 'ending the peek hides them again');
 
     console.log('\n-- api.show(needle) --');
     ok(api.show('handler_test.go') === 1, 'show() revealed exactly the matching file');

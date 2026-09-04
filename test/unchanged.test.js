@@ -59,12 +59,14 @@ const page = () => `<span class="diffstat" id="diffstat"><span class="color-fg-s
         'its stub says why (got: ' + (stub && stub.title) + ')');
     const pillText = doc.getElementById('ghtf-pill').textContent;
     ok(/1 unchanged/.test(pillText), 'pill reports it (got: ' + pillText + ')');
-    ok(!/[0-9]+ test file/.test(pillText), 'and does not miscount it as a test file (got: ' + pillText + ')');
+    ok(!/[0-9]+ files? hidden/.test(pillText), 'and does not count it among the hidden files (got: ' + pillText + ')');
 
     console.log('\n-- the header figure counts it as hidden --');
     const badge = doc.querySelector('.ghtf-visible-stat');
-    ok(badge && /excluding hidden/.test(badge.textContent),
-        'badge relabels itself (got: ' + (badge && badge.textContent) + ')');
+    ok(badge && /after filter/.test(badge.textContent),
+        'badge is labelled after filter (got: ' + (badge && badge.textContent) + ')');
+    ok(badge && /\+50/.test(badge.textContent),
+        'badge excludes the unchanged file from the figure (got: ' + (badge && badge.textContent) + ')');
     ok(badge && /\+50/.test(badge.textContent),
         '60 total less the 10 in the collapsed file (got: ' + (badge && badge.textContent) + ')');
 

@@ -33,27 +33,35 @@ const html = `<!doctype html><html><body>
     }
     const { window } = dom;
     const doc = window.document;
-    for (const f of manifest.content_scripts[0].js) window.eval(fs.readFileSync(path.join(EXT, f), 'utf8'));
+    // The MAIN-world entry: the isolated-world bridge cannot run in a page
+    // context and is not what this exercises.
+    const mainWorld = manifest.content_scripts.find(entry => entry.world === 'MAIN');
+    for (const f of mainWorld.js) window.eval(fs.readFileSync(path.join(EXT, f), 'utf8'));
     await sleep(400);
 
     const press = (key, opts = {}, target = doc.body) => target.dispatchEvent(
         new window.KeyboardEvent('keydown', { key, bubbles: true, ...opts }));
     const testFilter = () => window.__ghTestFileFilter;
 
-    console.log('\n-- t toggles the test filter --');
+    console.log('\n-- t shows and re-hides the files --');
     ok(testFilter().enabled === true, 'starts enabled');
+    ok(testFilter().hiding === true, 'starts hiding');
     press('t');
     await sleep(30);
-    ok(testFilter().enabled === false, 't turned it off');
+    ok(testFilter().hiding === false, 't showed the files');
+    // A keystroke is a peek, not a decision about the repository.
+    ok(testFilter().enabled === true, 't left the stored preference alone');
     press('t');
     await sleep(30);
-    ok(testFilter().enabled === true, 't turned it back on');
+    ok(testFilter().hiding === true, 't hid them again');
 
     console.log('\n-- c reaches the comment filter --');
-    const before = window.__ghCommentFilter && window.__ghCommentFilter.enabled;
+    const commentsBefore = window.__ghCommentFilter && window.__ghCommentFilter.hiding;
     press('c');
     await sleep(30);
-    ok(window.__ghCommentFilter && window.__ghCommentFilter.enabled === !before, 'c toggled it');
+    ok(window.__ghCommentFilter && window.__ghCommentFilter.hiding === !commentsBefore,
+        'c showed or hid the comment lines');
+    ok(window.__ghCommentFilter.enabled === true, 'and left its stored preference alone');
     press('c');
     await sleep(30);
 
@@ -82,6 +90,41 @@ const html = `<!doctype html><html><body>
     press('t');
     await sleep(30);
     ok(testFilter().enabled === true, 't is inert on a non-diff page');
+
+    console.log('\n-- a shortcut can be rebound --');
+    // The block above left the session on a non-diff page, where every key is
+    // correctly inert.
+    dom.reconfigure({ url: 'https://github.com/acme/repo/pull/1/files' });
+    const controls = dom.window.__ghDiffFilterControls;
+    ok(typeof controls === 'object' && controls !== null, 'controls expose an API, not just a flag');
+    controls.setKey('tests', 'x');
+    ok(controls.keys.tests === 'x', 'the new key is reported');
+    const wasHiding = testFilter().hiding;
+    press('x');
+    await sleep(30);
+    ok(testFilter().hiding !== wasHiding, 'the rebound key works');
+    const afterX = testFilter().hiding;
+    press('t');
+    await sleep(30);
+    ok(testFilter().hiding === afterX, 'the old key no longer does anything');
+    controls.setKey('tests', null);
+    ok(controls.keys.tests === 't', 'passing null restores the default');
+
+    console.log('\n-- the keys are published so they can be shown --');
+    ok(Array.isArray(controls.help()) && controls.help().some(h => h.key === 'j' && /next/.test(h.label)),
+        'each key is published with what it does');
+
+    console.log('\n-- GitHub’s character-key setting is honoured --');
+    doc.documentElement.setAttribute('data-single-character-key-shortcuts', 'disabled');
+    ok(controls.characterKeysDisabledByGitHub === true, 'the setting is detected by shape, not by name');
+    ok(controls.enabled === false, 'shortcuts switch themselves off');
+    const held = testFilter().hiding;
+    press('t');
+    await sleep(30);
+    ok(testFilter().hiding === held, 'and a keystroke does nothing while it is in force');
+    ok(controls.help().length === 0, 'nothing is advertised that will not work');
+    doc.documentElement.removeAttribute('data-single-character-key-shortcuts');
+    ok(controls.enabled === true, 'clearing the setting restores them');
 
     console.log('\n' + (failures === 0 ? 'ALL SHORTCUT ASSERTIONS PASS' : failures + ' SHORTCUT FAILURES'));
     process.exit(failures ? 1 : 0);

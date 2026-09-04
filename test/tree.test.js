@@ -81,7 +81,10 @@ const html = `<!doctype html><html><body>
     // Hidden: +30−5, +10−0, +10−5 = +50 −10. Totals +100 −20 leaves +50 −10.
     ok(/\+50/.test(badge.textContent) && /−10/.test(badge.textContent),
         'badge reports +50 −10 (got: ' + badge.textContent + ')');
-    ok(/3 hidden test files/.test(badge.title), 'badge tooltip names the excluded files (got: ' + badge.title + ')');
+    ok(/3 hidden files \(\+50 −10\)/.test(badge.title),
+        'badge tooltip accounts for what was excluded (got: ' + badge.title + ')');
+    ok(/after filter/.test(badge.textContent),
+        'badge is labelled after filter (got: ' + badge.textContent + ')');
 
     console.log('\n-- revealing one file updates tree and counts --');
     doc.querySelectorAll('.ghtf-stub')[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));

@@ -1,0 +1,37 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GitHub diff filters</title>
+<link rel="stylesheet" href="options.css">
+<main>
+    <h1>GitHub diff filters</h1>
+    <p class="lede">These settings follow your Chrome profile, so they apply on every machine you sign in to.</p>
+
+    <section>
+        <h2>Hide by default</h2>
+        <p class="hint">The starting point for a repository you have not made a choice about.</p>
+        <label class="row"><input type="checkbox" id="defaultEnabled"><span>Hide noise in new repositories</span></label>
+        <label class="row"><input type="checkbox" id="onlyChanged"><span>Also collapse files unchanged since your last visit</span></label>
+    </section>
+
+    <section>
+        <h2>What counts as noise</h2>
+        <div id="categories"></div>
+    </section>
+
+    <section>
+        <h2>Extra patterns</h2>
+        <p class="hint">One regular expression per line, for repositories with their own test layout.</p>
+        <textarea id="customRules" rows="4" spellcheck="false"></textarea>
+        <button id="saveRules" type="button">Save patterns</button>
+        <p class="error" id="rulesError" hidden></p>
+    </section>
+
+    <section>
+        <h2>Repositories with their own setting</h2>
+        <p class="hint">A repository you switched off or on by hand. Clearing one hands it back to the default above.</p>
+        <div id="overrides"></div>
+    </section>
+
+    <p class="status" id="status" aria-live="polite"></p>
+</main>
+<script src="options.js"></script>

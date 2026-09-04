@@ -69,11 +69,11 @@ const html = `<!doctype html><html><body><div id="files">
 
     console.log('\n-- an unreadable container is surfaced, not silently skipped --');
     const unreadable = [...doc.querySelectorAll('[class^="Diff-module__diffTargetable"]')]
-        .find(el => !el.hasAttribute('data-ghtf'));
-    ok(!!unreadable, 'container with no resolvable path stays unmarked so a later pass retries');
+        .find(el => el.getAttribute('data-ghtf') === 'pending');
+    ok(!!unreadable, 'container with no resolvable path is marked pending, not left unmarked');
     const pill = doc.getElementById('ghtf-pill');
-    ok(/⚠ 1 unread/.test(pill.textContent), 'pill reports the unreadable file (got: ' + pill.textContent + ')');
-    ok(/debug\(\)/.test(pill.title), 'pill tooltip points at debug()');
+    ok(/1 unread/.test(pill.textContent), 'pill reports the unreadable file (got: ' + pill.textContent + ')');
+    ok(/report\(\)/.test(pill.title), 'pill tooltip points at report()');
 
     console.log('\n-- totals --');
     const hidden = doc.querySelectorAll('.ghtf-stub').length;

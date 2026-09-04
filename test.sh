@@ -32,6 +32,40 @@ echo "=== per-file counts in the review view (source) ==="
 node "$HERE/test/changes-counts.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ CHANGES)'
 
 echo
+echo "=== header-less render race (source) ==="
+node "$HERE/test/render-race.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ RENDER-RACE)'
+echo
+echo "=== partial diff load (source) ==="
+node "$HERE/test/partial-load.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ PARTIAL-LOAD)'
+echo
+echo "=== after-filter header figure (source) ==="
+node "$HERE/test/after-filter.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ AFTER-FILTER)'
+echo
+echo "=== content categories + replacement resilience (source) ==="
+node "$HERE/test/resilience.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ RESILIENCE)'
+echo
+echo "=== viewed files (source) ==="
+node "$HERE/test/viewed.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ VIEWED)'
+echo
+echo "=== category popover (source) ==="
+node "$HERE/test/popover.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ POPOVER)'
+echo
+echo "=== pass cost on a large diff (source) ==="
+node "$HERE/test/perf.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|  [0-9]+ (files|idle)|[0-9]+ PERF)'
+echo
+echo "=== settings bridge and sync (source) ==="
+node "$HERE/test/sync.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ SYNC)'
+echo
+echo "=== comment filter (source) ==="
+node "$HERE/test/comment-filter.test.js" "$HERE/hide-comment-diffs.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ COMMENT-FILTER)'
+echo
+echo "=== state invariants (source) ==="
+node "$HERE/test/invariants.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ INVARIANT)'
+echo
+echo "=== scheduling under re-renders and mutation storms (source) ==="
+node "$HERE/test/settle.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ SETTLE)'
+
+echo
 echo "=== comment guard (source) ==="
 node "$HERE/test/comments.test.js" "$HERE/hide-test-files.src.js" | grep -E '^(  FAIL|ALL|[0-9]+ COMMENT)'
 
@@ -74,6 +108,39 @@ if [[ -f "$HERE/hide-test-files.min.js" ]]; then
     echo
     echo "=== per-file counts in the review view (minified build) ==="
     node "$HERE/test/changes-counts.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ CHANGES)'
+    echo
+    echo "=== header-less render race (minified build) ==="
+    node "$HERE/test/render-race.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ RENDER-RACE)'
+    echo
+    echo "=== partial diff load (minified build) ==="
+    node "$HERE/test/partial-load.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ PARTIAL-LOAD)'
+    echo
+    echo "=== after-filter header figure (minified build) ==="
+    node "$HERE/test/after-filter.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ AFTER-FILTER)'
+    echo
+    echo "=== content categories + replacement resilience (minified build) ==="
+    node "$HERE/test/resilience.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ RESILIENCE)'
+    echo
+    echo "=== viewed files (minified build) ==="
+    node "$HERE/test/viewed.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ VIEWED)'
+    echo
+    echo "=== category popover (minified build) ==="
+    node "$HERE/test/popover.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ POPOVER)'
+    echo
+    echo "=== pass cost on a large diff (minified build) ==="
+    node "$HERE/test/perf.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|  [0-9]+ (files|idle)|[0-9]+ PERF)'
+    echo
+    echo "=== settings bridge and sync (minified build) ==="
+    node "$HERE/test/sync.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ SYNC)'
+    echo
+    echo "=== comment filter (minified build) ==="
+    node "$HERE/test/comment-filter.test.js" "$HERE/hide-comment-diffs.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ COMMENT-FILTER)'
+    echo
+    echo "=== state invariants (minified build) ==="
+    node "$HERE/test/invariants.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ INVARIANT)'
+    echo
+    echo "=== scheduling under re-renders and mutation storms (minified build) ==="
+    node "$HERE/test/settle.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ SETTLE)'
     echo
     echo "=== comment guard (minified build) ==="
     node "$HERE/test/comments.test.js" "$HERE/hide-test-files.min.js" | grep -E '^(  FAIL|ALL|[0-9]+ COMMENT)'

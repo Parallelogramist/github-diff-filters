@@ -1,0 +1,21 @@
+:root { color-scheme: light dark; }
+body {
+    margin: 0;
+    font: 14px/1.5 -apple-system, system-ui, "Segoe UI", sans-serif;
+    background: Canvas;
+    color: CanvasText;
+}
+main { max-width: 620px; margin: 0 auto; padding: 32px 24px 48px; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 14px; margin: 0 0 4px; }
+.lede { margin: 0 0 28px; opacity: .7; }
+.hint { margin: 0 0 10px; font-size: 13px; opacity: .7; }
+section { margin-bottom: 28px; }
+.row { display: flex; gap: 10px; align-items: baseline; padding: 5px 0; cursor: pointer; }
+.row input { margin: 0; }
+.row .count { margin-left: auto; opacity: .55; font-variant-numeric: tabular-nums; }
+textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 12px; }
+button { margin-top: 8px; font: inherit; padding: 4px 12px; }
+.error { color: #cf222e; font-size: 13px; }
+.status { min-height: 1.5em; opacity: .7; font-size: 13px; }
+.empty { opacity: .55; font-size: 13px; }

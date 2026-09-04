@@ -13,7 +13,7 @@ const OUT_DIR = path.join(HERE, 'extension', 'filters');
 // code and reviewers read what ships. Minification only serves the bookmarklet,
 // which has to fit in a URL.
 const FILTERS = [
-    { source: 'hide-comment-diffs.min.js', global: '__ghCommentFilter' },
+    { source: 'hide-comment-diffs.src.js', global: '__ghCommentFilter' },
     { source: 'hide-test-files.src.js', global: '__ghTestFileFilter' }
 ];
 

@@ -1,14 +1,16 @@
 {
     "name": "github-diff-filters",
-    "version": "1.8.0",
+    "version": "1.13.1",
     "private": true,
     "description": "Chrome extension that hides test files and comment-only diff lines on GitHub pull request diffs.",
     "license": "MIT",
     "scripts": {
         "test": "./test.sh",
-        "build": "./build.sh hide-test-files",
+        "build": "./build.sh",
         "icons": "./build-icons.sh",
-        "package": "./package.sh"
+        "package": "./package.sh",
+        "check:build": "./check-build-fresh.sh",
+        "verify": "./test.sh && ./check-build-fresh.sh"
     },
     "devDependencies": {
         "jsdom": "^25.0.1",

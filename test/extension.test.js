@@ -12,7 +12,10 @@ const { JSDOM } = require('jsdom');
 // GH_EXTENSION_DIR lets the same suite verify a packaged copy, not just the source tree.
 const EXT = process.env.GH_EXTENSION_DIR || path.join(__dirname, '..', 'extension');
 const manifest = JSON.parse(fs.readFileSync(path.join(EXT, 'manifest.json'), 'utf8'));
-const contentScripts = manifest.content_scripts[0];
+// Addressed by world, not by position: the isolated-world bridge is a
+// separate entry and the order of the two is not the contract.
+const contentScripts = manifest.content_scripts.find(entry => entry.world === 'MAIN');
+const bridgeScripts = manifest.content_scripts.find(entry => entry.world === 'ISOLATED');
 
 let failures = 0;
 const ok = (cond, label) => { console.log((cond ? '  PASS  ' : '  FAIL  ') + label); if (!cond) failures++; };
@@ -46,7 +49,9 @@ function loadContentScripts(window) {
     ok(contentScripts.matches.length === 1 && contentScripts.matches[0] === 'https://github.com/*',
         'matched across github.com, because Turbo navigation never reloads the document');
     ok(contentScripts.js.indexOf('bootstrap.js') === 2, 'bootstrap runs after both filters');
-    ok(contentScripts.js.indexOf('pill-skin.js') === 3, 'the pill skin runs after the bootstrap');
+    ok(!contentScripts.js.includes('pill-skin.js'),
+        'no pill skin ships: the comment filter renders the shared shape itself');
+    ok(contentScripts.js[contentScripts.js.length - 1] === 'controls.js', 'controls run last');
     ok(contentScripts.js[contentScripts.js.length - 1] === 'controls.js',
         'the controls run last, once both pills can exist');
     for (const file of contentScripts.js) {
@@ -106,17 +111,27 @@ function loadContentScripts(window) {
         'comment pill offers Show (got: ' + (chipOf(commentPill) || {}).textContent + ')');
     ok(!/click to/i.test(testPill.textContent + commentPill.textContent),
         'neither pill still says "click to"');
-    ok(commentPill.getAttribute('data-ghdf-skin') === 'styled', 'comment pill restyled to match');
+    ok(commentPill.querySelector('.ghdf-pill-label') && commentPill.querySelector('.ghdf-pill-action'),
+        'the comment pill is built from the shared parts, not restyled from outside');
+    ok(!fs.existsSync(path.join(__dirname, '..', 'extension', 'pill-skin.js')),
+        'the skin is gone from the tree');
+    ok(!fs.readFileSync(path.join(__dirname, '..', 'extension', 'bootstrap.js'), 'utf8')
+        .includes('No diff found'),
+        'and so is the bootstrap hook that deleted the notice it could not prevent');
     const chipCount = commentPill.querySelectorAll('.ghdf-pill-action').length;
     await sleep(300);
     ok(commentPill.querySelectorAll('.ghdf-pill-action').length === chipCount,
         'the skin settles instead of re-rendering itself in a loop');
 
-    console.log('\n-- the action flips to Hide once hiding is off --');
-    dom.window.__ghTestFileFilter.enabled = false;
+    console.log('\n-- the action flips to Hide once the files are showing --');
+    dom.window.__ghTestFileFilter.peek(true);
     await sleep(50);
     ok(chipOf(doc.getElementById('ghtf-pill')).textContent === 'Hide',
-        'test pill offers Hide when files are shown');
+        'test pill offers Hide while a peek is in force');
+    dom.window.__ghTestFileFilter.enabled = false;
+    await sleep(50);
+    ok(chipOf(doc.getElementById('ghtf-pill')).textContent === 'Turn on',
+        'test pill offers Turn on when the repo preference is off');
     dom.window.__ghTestFileFilter.enabled = true;
     await sleep(50);
 
@@ -124,11 +139,87 @@ function loadContentScripts(window) {
     await sleep(300);
     const dock = doc.getElementById('ghdf-dock');
     ok(!!dock, 'dock created');
-    ok(dock && dock.contains(doc.getElementById('ghtf-pill')), 'test pill docked');
-    ok(dock && dock.contains(doc.getElementById('ghccf-pill')), 'comment pill docked');
+    const panel = dock && dock.querySelector('.ghdf-panel');
+    ok(panel && panel.contains(doc.getElementById('ghtf-pill')), 'test pill docked in the panel');
+    ok(panel && panel.contains(doc.getElementById('ghccf-pill')), 'comment pill docked in the panel');
     ok(doc.getElementById('ghtf-pill').style.position === 'static',
         'the docked pill stops placing itself');
-    ok(/j\/k next and previous/.test(dock.title), 'dock names the shortcuts');
+    const help = dom.window.__ghDiffFilterShortcuts;
+    ok(Array.isArray(help) && help.some(entry => entry.key === 't' && /test files/.test(entry.label))
+        && help.some(entry => entry.key === 'j' && /next visible file/.test(entry.label)),
+        'the shortcuts are published for the popover to list');
+
+    console.log('\n-- collapsed, the dock is a shorthand and an icon; it expands on hover or focus --');
+    const indicator = dock.querySelector('.ghdf-indicator');
+    const shorthand = dock.querySelector('.ghdf-shorthand');
+    const tests = dom.window.__ghTestFileFilter.summary();
+    const comments = dom.window.__ghCommentFilter.summary();
+    const settings = dock.querySelector('.ghdf-settings');
+    ok(!!indicator && shorthand.tagName === 'BUTTON' && settings && settings.tagName === 'BUTTON',
+        'the shorthand and the funnel are buttons, so both can take focus');
+    ok(indicator.children.length === 2 && indicator.firstElementChild === shorthand
+        && indicator.lastElementChild === settings, 'shorthand on the left, funnel on the right, nothing else');
+    ok(shorthand && shorthand.textContent === `${tests.hidden}:${comments.hiddenLines}`,
+        `shorthand reads files:lines (got "${shorthand && shorthand.textContent}", `
+        + `expected "${tests.hidden}:${comments.hiddenLines}")`);
+    ok(tests.hidden === 1 && comments.hiddenLines > 0, 'and both numbers are real');
+    ok(!!settings.querySelector('svg') && indicator.classList.contains('ghdf-active'),
+        'the funnel marks the filters as in force');
+    ok(/1 file and \d+ comment lines? hidden/.test(shorthand.getAttribute('aria-label') || ''),
+        `the shorthand names its numbers for a screen reader (got: ${shorthand.getAttribute('aria-label')})`);
+    const css = (doc.getElementById('ghdf-dock-style') || {}).textContent || '';
+    ok(/\.ghdf-panel\{display:none/.test(css) && /#ghdf-dock:hover \.ghdf-panel/.test(css)
+        && /#ghdf-dock:focus-within \.ghdf-panel/.test(css),
+        'the panel is hidden until the dock is hovered or focused');
+    shorthand.click();
+    ok(dock.classList.contains('ghdf-pinned') && shorthand.getAttribute('aria-expanded') === 'true',
+        'a click on the shorthand pins the panel open for readers without a hover');
+    shorthand.click();
+    ok(!dock.classList.contains('ghdf-pinned') && shorthand.getAttribute('aria-expanded') === 'false',
+        'and a second click lets it collapse again');
+
+    console.log('\n-- the funnel is the settings menu --');
+    ok(!doc.getElementById('ghtf-pill').querySelector('.ghtf-pill-settings'),
+        'the docked pill carries no settings icon of its own');
+    ok(!doc.getElementById('ghtf-popover'), 'the category popover starts closed');
+    settings.click();
+    ok(!!doc.getElementById('ghtf-popover') && settings.getAttribute('aria-expanded') === 'true',
+        'a click on the funnel opens the category popover and says so');
+    ok(doc.getElementById('ghtf-popover').querySelectorAll('.ghtf-popover-row').length >= 10,
+        'with every category listed');
+    settings.click();
+    ok(!doc.getElementById('ghtf-popover') && settings.getAttribute('aria-expanded') === 'false',
+        'and a second click closes it');
+    settings.click();
+    doc.body.click();
+    ok(!doc.getElementById('ghtf-popover') && settings.getAttribute('aria-expanded') === 'false',
+        'a click elsewhere closes it too, and the funnel follows');
+    dom.window.__ghTestFileFilter.peek(true);
+    await sleep(50);
+    ok(shorthand.textContent === `0:${comments.hiddenLines}`,
+        `the shorthand follows a peek (got "${shorthand.textContent}")`);
+    dom.window.__ghTestFileFilter.peek(false);
+    await sleep(50);
+
+    console.log('\n-- no emoji anywhere in the control --');
+    const glyphs = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}]/u;
+    ok(!glyphs.test(dock.textContent), `the dock draws icons, not emoji (text: "${dock.textContent}")`);
+    ok(doc.getElementById('ghtf-pill').querySelectorAll('svg').length === 1
+        && doc.getElementById('ghccf-pill').querySelectorAll('svg').length === 1,
+        'each pill leads with one icon and carries no other');
+
+    console.log('\n-- with both filters and the dock installed, the page goes quiet --');
+    await sleep(700);
+    let writes = 0;
+    const seen = [];
+    const spy = new dom.window.MutationObserver(records => {
+        writes += records.length;
+        for (const record of records.slice(0, 2)) seen.push(record.target.id || record.target.className);
+    });
+    spy.observe(doc.documentElement, { childList: true, subtree: true });
+    await sleep(1200);
+    spy.disconnect();
+    ok(writes === 0, `no filter rewrites anything once settled (got ${writes}: ${seen.slice(0, 5).join(', ')})`);
 
     console.log('\n-- a second run re-applies instead of toggling off --');
     const before = doc.querySelectorAll('.ghtf-stub').length;
@@ -155,6 +246,18 @@ function loadContentScripts(window) {
         .replace(/\}\);\s*$/, ''));
     ok(/No diff found/.test(plain.window.document.body.textContent),
         'the bookmarklet build keeps its nudge, since nothing set the auto flag');
+
+    console.log('\n-- the settings bridge is declared in the isolated world --');
+    ok(!!bridgeScripts, 'an isolated-world entry exists');
+    ok(bridgeScripts.js.length === 1 && bridgeScripts.js[0] === 'bridge.js', 'it runs only the bridge');
+    ok(bridgeScripts.run_at === 'document_start',
+        'it starts before the filters, so their first pull is answered');
+    ok(Array.isArray(manifest.permissions) && manifest.permissions.includes('storage'),
+        'storage is the one permission this needs');
+    ok(manifest.options_ui && manifest.options_ui.page === 'options.html', 'an options page is declared');
+    for (const file of ['bridge.js', 'options.html', 'options.js', 'options.css']) {
+        ok(fs.existsSync(path.join(__dirname, '..', 'extension', file)), `extension/${file} ships`);
+    }
 
     console.log('\n' + (failures === 0 ? 'ALL EXTENSION ASSERTIONS PASS' : failures + ' EXTENSION FAILURES'));
     process.exit(failures ? 1 : 0);

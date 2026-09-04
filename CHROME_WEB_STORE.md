@@ -60,7 +60,7 @@ Copy you can paste:
 >
 > Hide comment diffs — hides diff lines whose only change is a comment or whitespace.
 >
-> Both apply themselves on every PR diff screen. Each puts a pill in the corner stating what it hid and what clicking does, and the choice is remembered.
+> Both apply themselves on every PR diff screen. One control in the corner reads `files:lines` — what each filter hid — and expands on hover to the two pills, each stating what it hid and what clicking does. The choice is remembered.
 >
 > Files are matched by path, not content, so a test file collapses before its diff has finished loading — which is what makes it usable on a very large pull request. Test conventions for JavaScript, TypeScript, Python, Go, Ruby, Java, Kotlin, Scala, C#, PHP, Cucumber and the common test-runner configs are recognised, and you can add a pattern of your own from the console.
 >
@@ -102,16 +102,19 @@ for a first submission from a new account. You get email on approval or
 rejection; a rejection names the policy at issue and you resubmit after
 fixing it.
 
-## Before you submit: the vendored filter
+## What the reviewer sees
 
-`extension/filters/hide-comment-diffs.js` is a minified script with no
-readable source in this repository. Web Store policy prohibits **obfuscated**
-code — minification is allowed, and reviewers can ask to see source. Two ways
-to avoid an argument you cannot win:
+Every script in the package is readable source. Nothing is minified and nothing
+is obfuscated, so there is no source to be asked for that is not already there:
 
-1. Publish only the test-file filter, by removing that file from
-   `manifest.json`'s `content_scripts` and from `build-extension.js`.
-2. Restore or rewrite its readable source and ship that, the way the test-file
-   filter is shipped.
+| File | What it does |
+| --- | --- |
+| `bridge.js` | Relays preferences to and from synced storage (isolated world) |
+| `filters/hide-test-files.js` | Classifies files and hides the noise |
+| `filters/hide-comment-diffs.js` | Hides comment-only and whitespace-only lines |
+| `bootstrap.js` | Starts the filters once a diff is on screen |
+| `controls.js` | The corner control the two pills expand from, and the keyboard shortcuts |
+| `options.html` / `options.js` / `options.css` | The settings page |
 
-Everything else in the package ships as readable source.
+The minified builds in the repository root exist for the bookmarklets, which
+have to fit in a URL. They are not part of the extension.
